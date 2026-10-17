@@ -15,7 +15,7 @@ POSITIONS = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 class FPLClient:
     def __init__(self, session: requests.Session | None = None, pause: float = 0.2) -> None:
         self.session = session or requests.Session()
-        self.session.headers.setdefault("User-Agent", "fpl-assistant")
+        self.session.headers["User-Agent"] = "fpl-assistant"
         self.pause = pause  # Politesse : l'API limite les rafales de requêtes.
 
     def _get(self, path: str) -> Any:
@@ -38,19 +38,25 @@ class FPLClient:
 
 
 def players_table(bootstrap: dict[str, Any]) -> pd.DataFrame:
-    """Joueurs de la saison en cours : poste, club, prix en M£, statut."""
-    teams = {t["id"]: t["short_name"] for t in bootstrap["teams"]}
+    """Joueurs de la saison en cours : poste, club, prix en M£, statut.
+
+    `team` reprend le nom long (« Man City »), comme l'historique vaastav, et `code` est
+    l'identifiant stable du joueur d'une saison à l'autre.
+    """
+    teams = {t["id"]: t["name"] for t in bootstrap["teams"]}
     df = pd.DataFrame(bootstrap["elements"])
     df = df[df["element_type"].isin(POSITIONS)]
     return pd.DataFrame(
         {
             "element": df["id"],
+            "code": df["code"],
             "name": df["web_name"],
             "position": df["element_type"].map(POSITIONS),
             "team": df["team"].map(teams),
             "price": df["now_cost"] / 10,
             "status": df["status"],
-            "chance_of_playing": df["chance_of_playing_next_round"],
+            # null = aucune actualité médicale, donc joueur disponible.
+            "chance_of_playing": df["chance_of_playing_next_round"].fillna(100),
         }
     ).reset_index(drop=True)
 
