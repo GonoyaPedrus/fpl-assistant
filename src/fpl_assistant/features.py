@@ -66,7 +66,8 @@ def to_gameweeks(df: pd.DataFrame) -> pd.DataFrame:
     """Agrège les matchs par joueur et journée : une double journée devient une seule ligne."""
     agg = {col: "sum" for col in ROLLING_COLS}
     agg |= {"kickoff_time": "min", "fixture": "count"}
-    agg |= {c: "first" for c in ("code", "name", "position", "team", "price") if c in df}
+    carried = ("code", "name", "position", "team", "price", "status", "chance_of_playing")
+    agg |= {c: "first" for c in carried if c in df}
     agg |= {c: "mean" for c in FIXTURE_COLS if c in df}
     out = df.groupby([*KEYS, "GW"], as_index=False).agg(agg)
     return out.rename(columns={"fixture": "n_fixtures"})
@@ -83,3 +84,8 @@ def add_form_features(gw: pd.DataFrame) -> pd.DataFrame:
         gw = gw.join(_lagged_mean(gw, KEYS, ROLLING_COLS, w).add_suffix(f"_avg{w}"))
     gw["n_past_gws"] = gw.groupby(KEYS, sort=False).cumcount()
     return gw
+
+
+def prepare(matches: pd.DataFrame) -> pd.DataFrame:
+    """Pipeline complet : matchs → features d'adversaire → journées → features de forme."""
+    return add_form_features(to_gameweeks(add_fixture_features(matches)))

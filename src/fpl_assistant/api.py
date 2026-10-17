@@ -44,13 +44,18 @@ class FPLClient:
         return self._get(f"entry/{entry}/event/{gw}/picks/")
 
 
+def team_names(bootstrap: dict[str, Any]) -> dict[int, str]:
+    """id → nom long du club (« Man City »), le format utilisé partout, historique compris."""
+    return {t["id"]: t["name"] for t in bootstrap["teams"]}
+
+
 def players_table(bootstrap: dict[str, Any]) -> pd.DataFrame:
     """Joueurs de la saison en cours : poste, club, prix en M£, statut.
 
     `team` reprend le nom long (« Man City »), comme l'historique vaastav, et `code` est
     l'identifiant stable du joueur d'une saison à l'autre.
     """
-    teams = {t["id"]: t["name"] for t in bootstrap["teams"]}
+    teams = team_names(bootstrap)
     df = pd.DataFrame(bootstrap["elements"])
     df = df[df["element_type"].isin(POSITIONS)]
     return pd.DataFrame(
@@ -62,8 +67,11 @@ def players_table(bootstrap: dict[str, Any]) -> pd.DataFrame:
             "team": df["team"].map(teams),
             "price": df["now_cost"] / 10,
             "status": df["status"],
-            # null = aucune actualité médicale, donc joueur disponible.
-            "chance_of_playing": df["chance_of_playing_next_round"].fillna(100),
+            # null = pas d'actualité : 100 % pour un joueur disponible (« a »), 0 sinon
+            # (parti, prêté…). Une valeur explicite de l'API prime toujours.
+            "chance_of_playing": df["chance_of_playing_next_round"].fillna(
+                (df["status"] == "a") * 100.0
+            ),
         }
     ).reset_index(drop=True)
 
@@ -97,7 +105,7 @@ def season_history(client: FPLClient, bootstrap: dict[str, Any]) -> pd.DataFrame
     liste aussi les matchs pas encore joués (0 point) et des points provisoires.
     """
     gws = finished_gameweeks(bootstrap)
-    teams = {t["id"]: t["name"] for t in bootstrap["teams"]}
+    teams = team_names(bootstrap)
     fixtures = {f["id"]: f for f in client.fixtures() if f["event"] in gws and f["finished"]}
     # Même format de nom que vaastav (« Bukayo Saka »), pas le web_name (« Saka »).
     full_names = {e["id"]: f"{e['first_name']} {e['second_name']}" for e in bootstrap["elements"]}

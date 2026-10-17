@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 from fpl_assistant import (
     DEFAULT_DATA,
@@ -22,8 +23,7 @@ from fpl_assistant import (
 
 
 def _prepare(path: Path) -> pd.DataFrame:
-    matches = features.add_fixture_features(pd.read_parquet(path))
-    return features.add_form_features(features.to_gameweeks(matches))
+    return features.prepare(pd.read_parquet(path))
 
 
 def _report(label: str, test: pd.DataFrame, pred: pd.Series) -> None:
@@ -41,19 +41,27 @@ def _report(label: str, test: pd.DataFrame, pred: pd.Series) -> None:
 def _print_squad(gw: int, squad) -> None:
     order = {pos: i for i, pos in enumerate(POSITIONS)}
     table = squad.squad.assign(
+        bench=~squad.squad.index.isin(squad.xi.index),
         _order=squad.squad["position"].map(order),
-        role=lambda d: d.index.map(lambda i: "XI" if i in squad.xi.index else "banc"),
-        _bench=lambda d: d["role"] == "banc",
-    ).sort_values(["_bench", "_order", "xp"], ascending=[True, True, False])
+    )
+    # Titulaires par poste ; banc dans l'ordre des remplacements FPL : gardien d'abord,
+    # puis les joueurs de champ du plus au moins prometteur.
+    table["_rank"] = table["_order"].where(~table["bench"], (table["position"] != "GK") * 1)
+    table = table.sort_values(["bench", "_rank", "xp"], ascending=[True, True, False])
     print(f"Équipe recommandée pour la J{gw} ({squad.cost:.1f} M£)")
     for element, row in table.iterrows():
         cap = " (C)" if element == squad.captain else ""
-        flag = (
-            "" if row["status"] == "a" else f"  [{row['status']}, {row['chance_of_playing']:.0f} %]"
-        )
+        notes = []
+        if row["status"] != "a":
+            notes.append(f"{row['status']}, {row['chance_of_playing']:.0f} %")
+        if row["n_fixtures"] != 1:
+            notes.append(
+                "ne joue pas" if row["n_fixtures"] == 0 else f"{row['n_fixtures']:.0f} matchs"
+            )
+        flag = f"  [{'; '.join(notes)}]" if notes else ""
         print(
-            f"  {row['role']:4} {row['position']:3} {row['name'] + cap:24} {row['team']:15}"
-            f" {row['price']:5.1f} M£  {row['xp']:4.1f} pts{flag}"
+            f"  {'banc' if row['bench'] else 'XI':4} {row['position']:3} {row['name'] + cap:24}"
+            f" {row['team']:15} {row['price']:5.1f} M£  {row['xp']:4.1f} pts{flag}"
         )
     print(f"Points attendus (XI + capitaine) : {squad.expected_points:.1f}")
 
@@ -105,6 +113,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "recommend":
         try:
             next_gw, squad = recommend.recommend(pd.read_parquet(args.data), budget=args.budget)
+        except FileNotFoundError:
+            parser.exit(1, f"Pas de données dans {args.data} : lance `fpl pull`.\n")
+        except ModuleNotFoundError as exc:
+            parser.exit(1, f"{exc} : installe l'extra ML (pip install -e '.[ml]').\n")
+        except requests.RequestException as exc:
+            parser.exit(1, f"API FPL injoignable : {exc}\n")
         except ValueError as exc:
             parser.exit(1, f"{exc}\n")
         _print_squad(next_gw, squad)

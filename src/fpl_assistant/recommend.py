@@ -9,8 +9,6 @@ import pandas as pd
 from fpl_assistant import api, features, model
 from fpl_assistant.optimize import Squad, pick_squad
 
-UNAVAILABLE = {"i", "s", "u", "n"}  # Blessé, suspendu, parti, non disponible.
-
 
 def upcoming_matches(
     bootstrap: dict[str, Any], fixtures: list[dict[str, Any]], gw: int
@@ -21,33 +19,29 @@ def upcoming_matches(
     connues avant la deadline sont remplies. Un joueur dont le club ne joue pas n'a pas de
     ligne ; en double journée, il en a deux.
     """
-    teams = {t["id"]: t["name"] for t in bootstrap["teams"]}
-    games = []
-    for f in fixtures:
-        if f["event"] != gw:
-            continue
-        for side, home in (("team_h", True), ("team_a", False)):
-            games.append(
-                {
-                    "fixture": f["id"],
-                    "team": teams[f[side]],
-                    "was_home": home,
-                    "kickoff_time": pd.Timestamp(f["kickoff_time"]),
-                }
-            )
+    teams = api.team_names(bootstrap)
+    games = [
+        {
+            "fixture": f["id"],
+            "team": teams[f[side]],
+            "was_home": side == "team_h",
+            "kickoff_time": pd.Timestamp(f["kickoff_time"]),
+        }
+        for f in fixtures
+        if f["event"] == gw
+        for side in ("team_h", "team_a")
+    ]
     if not games:
         return pd.DataFrame()
-    players = api.players_table(bootstrap)
-    rows = players.merge(pd.DataFrame(games), on="team")
+    rows = api.players_table(bootstrap).merge(pd.DataFrame(games), on="team")
     rows["season"] = api.current_season(bootstrap)
     rows["GW"] = gw
     return rows
 
 
 def availability(players: pd.DataFrame) -> pd.Series:
-    """Probabilité de jouer : `chance_of_playing` en %, 0 pour un joueur indisponible."""
-    chance = players["chance_of_playing"] / 100
-    return chance.where(~players["status"].isin(UNAVAILABLE), 0.0)
+    """Probabilité de jouer, d'après `chance_of_playing` (en %, cf. `api.players_table`)."""
+    return players["chance_of_playing"] / 100
 
 
 def predict_next(history: pd.DataFrame, upcoming: pd.DataFrame) -> pd.DataFrame:
@@ -56,19 +50,44 @@ def predict_next(history: pd.DataFrame, upcoming: pd.DataFrame) -> pd.DataFrame:
     Le modèle est entraîné sur tout l'historique, puis appliqué aux lignes à venir ; leurs
     features de forme et d'adversaire ne voient que les journées déjà jouées.
     """
-    matches = pd.concat([history, upcoming], ignore_index=True)
-    gw = features.add_form_features(features.to_gameweeks(features.add_fixture_features(matches)))
+    gw = features.prepare(pd.concat([history, upcoming], ignore_index=True))
     season, next_gw = upcoming["season"].iloc[0], upcoming["GW"].iloc[0]
     is_next = (gw["season"] == season) & (gw["GW"] == next_gw)
     trained = model.train(gw[~is_next])
     target = gw[is_next].copy()
-    target["raw_xp"] = model.predict(trained, target)
-    # `to_gameweeks` ne garde pas le statut médical : il vient de `upcoming`.
-    current = upcoming.drop_duplicates("element").set_index("element")
-    for col in ("status", "chance_of_playing"):
-        target[col] = target["element"].map(current[col])
+    # Une prédiction légèrement négative ne doit pas classer un titulaire sous un blessé à 0.
+    target["raw_xp"] = model.predict(trained, target).clip(lower=0)
     target["xp"] = target["raw_xp"] * availability(target)
     return target
+
+
+def check_fresh(history: pd.DataFrame, bootstrap: dict[str, Any]) -> None:
+    """Refuse un historique qui n'a pas la dernière journée validée par la FPL."""
+    done = api.finished_gameweeks(bootstrap)
+    if not done:
+        return  # Avant la J1 : rien à attendre de la saison en cours.
+    season = api.current_season(bootstrap)
+    have = history.loc[history["season"] == season, "GW"].max()
+    if pd.isna(have) or have < max(done):
+        raise ValueError(
+            f"Données périmées : J{max(done)} est validée mais l'historique s'arrête "
+            f"{'avant la saison' if pd.isna(have) else f'à la J{have}'}. "
+            "Lance `fpl pull` (ou `fpl ingest`)."
+        )
+
+
+def candidate_pool(bootstrap: dict[str, Any], preds: pd.DataFrame) -> pd.DataFrame:
+    """Tous les joueurs disponibles, indexés par `element`, avec leur `xp`.
+
+    Un joueur dont le club ne joue pas reste candidat à 0 point (utile au banc) ; un joueur
+    indisponible (blessé, suspendu, parti) est retiré pour ne jamais être choisi.
+    """
+    players = api.players_table(bootstrap)
+    players = players[availability(players) > 0]
+    cols = ["element", "raw_xp", "xp", "n_fixtures"]
+    pool = players.merge(preds[cols], on="element", how="left")
+    pool[["raw_xp", "xp", "n_fixtures"]] = pool[["raw_xp", "xp", "n_fixtures"]].fillna(0)
+    return pool.set_index("element")
 
 
 def recommend(
@@ -79,8 +98,9 @@ def recommend(
     gw = api.next_gameweek(bootstrap)
     if gw is None:
         raise ValueError("Pas de prochaine journée dans le calendrier FPL")
+    check_fresh(history, bootstrap)
     upcoming = upcoming_matches(bootstrap, client.fixtures(), gw)
     if upcoming.empty:
         raise ValueError(f"Aucun match prévu en J{gw}")
     preds = predict_next(history, upcoming)
-    return gw, pick_squad(preds.set_index("element"), budget=budget)
+    return gw, pick_squad(candidate_pool(bootstrap, preds), budget=budget)
