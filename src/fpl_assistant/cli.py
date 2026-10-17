@@ -1,4 +1,4 @@
-"""Ligne de commande : `fpl ingest`, `fpl pull`, `fpl latest`, `fpl baseline`, `fpl train`."""
+"""Ligne de commande : `fpl ingest`, `pull`, `latest`, `baseline`, `train`, `recommend`."""
 
 from __future__ import annotations
 
@@ -8,13 +8,22 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import requests
 
-from fpl_assistant import DEFAULT_DATA, api, evaluate, features, ingest, model
+from fpl_assistant import (
+    DEFAULT_DATA,
+    POSITIONS,
+    api,
+    evaluate,
+    features,
+    ingest,
+    model,
+    recommend,
+)
 
 
 def _prepare(path: Path) -> pd.DataFrame:
-    matches = features.add_fixture_features(pd.read_parquet(path))
-    return features.add_form_features(features.to_gameweeks(matches))
+    return features.prepare(pd.read_parquet(path))
 
 
 def _report(label: str, test: pd.DataFrame, pred: pd.Series) -> None:
@@ -27,6 +36,34 @@ def _report(label: str, test: pd.DataFrame, pred: pd.Series) -> None:
         f"{label:14} RMSE {m_all['rmse']:.3f}  MAE {m_all['mae']:.3f}  |  ont joué : "
         f"RMSE {m_played['rmse']:.3f}  MAE {m_played['mae']:.3f}  |  top 20 : {top:.2f} pts"
     )
+
+
+def _print_squad(gw: int, squad) -> None:
+    order = {pos: i for i, pos in enumerate(POSITIONS)}
+    table = squad.squad.assign(
+        bench=~squad.squad.index.isin(squad.xi.index),
+        _order=squad.squad["position"].map(order),
+    )
+    # Titulaires par poste ; banc dans l'ordre des remplacements FPL : gardien d'abord,
+    # puis les joueurs de champ du plus au moins prometteur.
+    table["_rank"] = table["_order"].where(~table["bench"], (table["position"] != "GK") * 1)
+    table = table.sort_values(["bench", "_rank", "xp"], ascending=[True, True, False])
+    print(f"Équipe recommandée pour la J{gw} ({squad.cost:.1f} M£)")
+    for element, row in table.iterrows():
+        cap = " (C)" if element == squad.captain else ""
+        notes = []
+        if row["status"] != "a":
+            notes.append(f"{row['status']}, {row['chance_of_playing']:.0f} %")
+        if row["n_fixtures"] != 1:
+            notes.append(
+                "ne joue pas" if row["n_fixtures"] == 0 else f"{row['n_fixtures']:.0f} matchs"
+            )
+        flag = f"  [{'; '.join(notes)}]" if notes else ""
+        print(
+            f"  {'banc' if row['bench'] else 'XI':4} {row['position']:3} {row['name'] + cap:24}"
+            f" {row['team']:15} {row['price']:5.1f} M£  {row['xp']:4.1f} pts{flag}"
+        )
+    print(f"Points attendus (XI + capitaine) : {squad.expected_points:.1f}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -43,6 +80,9 @@ def main(argv: list[str] | None = None) -> None:
     p_pull = sub.add_parser("pull", help="Télécharge les données publiées par la GitHub Action")
     p_pull.add_argument("--out", type=Path, default=DEFAULT_DATA)
     sub.add_parser("latest", help="Dernière journée validée et version du format, ex. 2026-27:6:v1")
+    p_rec = sub.add_parser("recommend", help="Équipe recommandée pour la prochaine journée")
+    p_rec.add_argument("--data", type=Path, default=DEFAULT_DATA)
+    p_rec.add_argument("--budget", type=float, default=100.0, help="En M£ (défaut 100)")
 
     for name, help_ in [
         ("baseline", "Évalue la baseline forme récente"),
@@ -68,6 +108,20 @@ def main(argv: list[str] | None = None) -> None:
             print(ingest.marker(api.FPLClient().bootstrap()))
         except ValueError as exc:  # Rien à signaler : la sortie standard reste vide.
             print(exc, file=sys.stderr)
+        return
+
+    if args.cmd == "recommend":
+        try:
+            next_gw, squad = recommend.recommend(pd.read_parquet(args.data), budget=args.budget)
+        except FileNotFoundError:
+            parser.exit(1, f"Pas de données dans {args.data} : lance `fpl pull`.\n")
+        except ModuleNotFoundError as exc:
+            parser.exit(1, f"{exc} : installe l'extra ML (pip install -e '.[ml]').\n")
+        except requests.RequestException as exc:
+            parser.exit(1, f"API FPL injoignable : {exc}\n")
+        except ValueError as exc:
+            parser.exit(1, f"{exc}\n")
+        _print_squad(next_gw, squad)
         return
 
     gw = _prepare(args.data)

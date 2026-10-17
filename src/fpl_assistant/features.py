@@ -26,13 +26,14 @@ def add_fixture_features(matches: pd.DataFrame) -> pd.DataFrame:
 
     `*_att` = buts marqués et `*_def` = buts encaissés par match, en moyenne sur les
     `TEAM_WINDOW` journées précédentes de la saison. Le décalage se fait par journée.
+    Les matchs pas encore joués (scores manquants) reçoivent aussi ces features, calculées
+    sur les journées jouées avant eux : c'est ce qui sert à prédire la prochaine journée.
     """
-    played = matches.dropna(subset=["team_h_score", "team_a_score"])
-    n_teams = played.groupby(["season", "fixture"])["team"].nunique()
+    n_teams = matches.groupby(["season", "fixture"])["team"].nunique()
     if (n_teams > 2).any():
         bad = n_teams[n_teams > 2].index.tolist()[:5]
         raise ValueError(f"Matchs avec plus de deux clubs (étiquettes incohérentes) : {bad}")
-    teams = played.groupby(["season", "fixture", "team"], as_index=False).agg(
+    teams = matches.groupby(["season", "fixture", "team"], as_index=False).agg(
         GW=("GW", "first"),
         was_home=("was_home", "first"),
         h=("team_h_score", "first"),
@@ -65,7 +66,8 @@ def to_gameweeks(df: pd.DataFrame) -> pd.DataFrame:
     """Agrège les matchs par joueur et journée : une double journée devient une seule ligne."""
     agg = {col: "sum" for col in ROLLING_COLS}
     agg |= {"kickoff_time": "min", "fixture": "count"}
-    agg |= {c: "first" for c in ("code", "name", "position", "team", "price") if c in df}
+    carried = ("code", "name", "position", "team", "price", "status", "chance_of_playing")
+    agg |= {c: "first" for c in carried if c in df}
     agg |= {c: "mean" for c in FIXTURE_COLS if c in df}
     out = df.groupby([*KEYS, "GW"], as_index=False).agg(agg)
     return out.rename(columns={"fixture": "n_fixtures"})
@@ -82,3 +84,8 @@ def add_form_features(gw: pd.DataFrame) -> pd.DataFrame:
         gw = gw.join(_lagged_mean(gw, KEYS, ROLLING_COLS, w).add_suffix(f"_avg{w}"))
     gw["n_past_gws"] = gw.groupby(KEYS, sort=False).cumcount()
     return gw
+
+
+def prepare(matches: pd.DataFrame) -> pd.DataFrame:
+    """Pipeline complet : matchs → features d'adversaire → journées → features de forme."""
+    return add_form_features(to_gameweeks(add_fixture_features(matches)))
