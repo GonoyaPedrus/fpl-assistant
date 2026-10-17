@@ -83,6 +83,11 @@ def finished_gameweeks(bootstrap: dict[str, Any]) -> set[int]:
     return {e["id"] for e in bootstrap["events"] if e["finished"] and e["data_checked"]}
 
 
+def latest_label(bootstrap: dict[str, Any]) -> str:
+    """« saison:journée » de la dernière journée validée, ex. « 2026-27:6 » (0 avant la J1)."""
+    return f"{current_season(bootstrap)}:{max(finished_gameweeks(bootstrap), default=0)}"
+
+
 def season_history(client: FPLClient, bootstrap: dict[str, Any]) -> pd.DataFrame:
     """Historique match par match de la saison en cours, au format de `ingest.fetch_season`.
 

@@ -9,7 +9,8 @@ Suite de [RSPL](https://github.com/GonoyaPedrus/RSPL), projet de fin d'études, 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,ml]"
-fpl ingest      # 2020-21 → 2025-26 via vaastav, saison en cours via l'API (~3 min)
+fpl pull        # récupère les données déjà publiées (quelques secondes)
+fpl ingest      # ou tout retélécharger : vaastav + saison en cours via l'API (~3 min)
 fpl baseline    # évalue la baseline « forme récente » sur un split temporel
 fpl train       # entraîne LightGBM et le compare à la baseline
 pytest
@@ -18,6 +19,10 @@ pytest
 ## Données
 
 Saisons terminées issues de [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) ; saison en cours (matchs joués, joueurs, prix, calendrier, ton équipe) via l'API officielle `fantasy.premierleague.com/api` (`fpl_assistant.api`). Les données ne sont pas versionnées : `data/` est ignoré par git.
+
+## Mise à jour automatique
+
+La GitHub Action [Ingestion](.github/workflows/ingest.yml) tourne chaque matin à 6 h UTC. Si une nouvelle journée est terminée et validée par la FPL (`fpl latest`, ex. `2026-27:6`), elle relance l'ingestion et publie `gw.parquet` dans la release [`data-latest`](https://github.com/GonoyaPedrus/fpl-assistant/releases/tag/data-latest). `fpl pull` télécharge ce fichier. On peut aussi la lancer à la main depuis l'onglet Actions (option « force »).
 
 ## Modèle
 
@@ -38,4 +43,4 @@ LightGBM sur des features connues avant la deadline : forme sur 3 et 5 journées
 2. ~~Modèle LightGBM qui bat la baseline~~ ; à enrichir : minutes attendues, xG/xA, statut médical
 3. Optimiseur PuLP branché sur les prédictions de la prochaine journée
 4. Transferts : partir de mon équipe actuelle, coût des transferts (-4), horizon de plusieurs journées
-5. Routine hebdomadaire avant la deadline, puis une interface
+5. Recommandation hebdomadaire avant la deadline (l'ingestion après chaque journée est en place), puis une interface

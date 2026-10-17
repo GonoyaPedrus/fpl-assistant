@@ -1,4 +1,4 @@
-from fpl_assistant.api import next_gameweek, players_table, season_history
+from fpl_assistant.api import latest_label, next_gameweek, players_table, season_history
 
 BOOTSTRAP = {
     "teams": [{"id": 1, "name": "Arsenal"}, {"id": 2, "name": "Liverpool"}],
@@ -91,3 +91,12 @@ def test_season_history_keeps_finished_gameweeks_and_match_club():
     assert df["influence"].tolist() == [12.4]
     assert df["team"].tolist() == ["Liverpool"]  # Club du match, pas le club actuel.
     assert df["name"].tolist() == ["Bukayo Saka"]
+
+
+def test_latest_label():
+    events = [
+        {"id": 1, "deadline_time": "2026-08-21T17:30:00Z", "finished": True, "data_checked": True},
+        {"id": 2, "deadline_time": "2026-08-28T17:30:00Z", "finished": True, "data_checked": False},
+    ]  # fmt: skip
+    assert latest_label({"events": events}) == "2026-27:1"
+    assert latest_label({"events": [{**events[0], "finished": False}]}) == "2026-27:0"

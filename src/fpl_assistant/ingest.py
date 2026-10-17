@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 VAASTAV_URL = (
     "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/{file}"
 )
+RELEASE_URL = "https://github.com/GonoyaPedrus/fpl-assistant/releases/download/data-latest/{file}"
 # Saisons terminées. Les précédentes n'ont pas la colonne `position` dans merged_gw.csv.
 DEFAULT_SEASONS = (
     "2020-21",
@@ -91,4 +92,13 @@ def ingest(
     df["kickoff_time"] = pd.to_datetime(df["kickoff_time"], utc=True)
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)
+    return out
+
+
+def pull(out: Path = DEFAULT_DATA, timeout: int = 120) -> Path:
+    """Télécharge le jeu de données publié par la GitHub Action (évite ~3 min d'API)."""
+    resp = requests.get(RELEASE_URL.format(file="gw.parquet"), timeout=timeout)
+    resp.raise_for_status()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(resp.content)
     return out

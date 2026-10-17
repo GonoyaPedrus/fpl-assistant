@@ -1,4 +1,4 @@
-"""Point d'entrée en ligne de commande : `fpl ingest`, `fpl baseline`, `fpl train`."""
+"""Ligne de commande : `fpl ingest`, `fpl pull`, `fpl latest`, `fpl baseline`, `fpl train`."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from fpl_assistant import DEFAULT_DATA, evaluate, features, ingest, model
+from fpl_assistant import DEFAULT_DATA, api, evaluate, features, ingest, model
 
 
 def _prepare(path: Path) -> pd.DataFrame:
@@ -39,6 +39,10 @@ def main(argv: list[str] | None = None) -> None:
         "--no-current", action="store_true", help="Sans la saison en cours (API FPL)"
     )
 
+    p_pull = sub.add_parser("pull", help="Télécharge les données publiées par la GitHub Action")
+    p_pull.add_argument("--out", type=Path, default=DEFAULT_DATA)
+    sub.add_parser("latest", help="Affiche la dernière journée validée, ex. 2026-27:6")
+
     for name, help_ in [
         ("baseline", "Évalue la baseline forme récente"),
         ("train", "Entraîne LightGBM et le compare à la baseline"),
@@ -51,6 +55,12 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.cmd == "ingest":
         print(f"Écrit : {ingest.ingest(out=args.out, current=not args.no_current)}")
+        return
+    if args.cmd == "pull":
+        print(f"Écrit : {ingest.pull(out=args.out)}")
+        return
+    if args.cmd == "latest":
+        print(api.latest_label(api.FPLClient().bootstrap()))
         return
 
     gw = _prepare(args.data)
