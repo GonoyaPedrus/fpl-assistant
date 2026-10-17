@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 BASE_URL = "https://fantasy.premierleague.com/api"
 POSITIONS = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -14,7 +16,12 @@ POSITIONS = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
 class FPLClient:
     def __init__(self, session: requests.Session | None = None, pause: float = 0.2) -> None:
-        self.session = session or requests.Session()
+        if session is None:
+            session = requests.Session()
+            # L'API renvoie des 429/503 autour des deadlines : on réessaie avec un délai.
+            retry = Retry(total=4, backoff_factor=2, status_forcelist=(429, 500, 502, 503, 504))
+            session.mount("https://", HTTPAdapter(max_retries=retry))
+        self.session = session
         self.session.headers["User-Agent"] = "fpl-assistant"
         self.pause = pause  # Politesse : l'API limite les rafales de requêtes.
 
@@ -63,3 +70,49 @@ def players_table(bootstrap: dict[str, Any]) -> pd.DataFrame:
 
 def next_gameweek(bootstrap: dict[str, Any]) -> int | None:
     return next((e["id"] for e in bootstrap["events"] if e.get("is_next")), None)
+
+
+def current_season(bootstrap: dict[str, Any]) -> str:
+    """Libellé de la saison en cours au format vaastav, ex. « 2026-27 »."""
+    year = pd.Timestamp(bootstrap["events"][0]["deadline_time"]).year
+    return f"{year}-{(year + 1) % 100:02d}"
+
+
+def finished_gameweeks(bootstrap: dict[str, Any]) -> set[int]:
+    """Journées terminées et dont les points sont validés (bonus compris)."""
+    return {e["id"] for e in bootstrap["events"] if e["finished"] and e["data_checked"]}
+
+
+def season_history(client: FPLClient, bootstrap: dict[str, Any]) -> pd.DataFrame:
+    """Historique match par match de la saison en cours, au format de `ingest.fetch_season`.
+
+    Seules les journées terminées et validées sont gardées : pendant une journée, l'API
+    liste aussi les matchs pas encore joués (0 point) et des points provisoires.
+    """
+    gws = finished_gameweeks(bootstrap)
+    teams = {t["id"]: t["name"] for t in bootstrap["teams"]}
+    fixtures = {f["id"]: f for f in client.fixtures() if f["event"] in gws and f["finished"]}
+    # Même format de nom que vaastav (« Bukayo Saka »), pas le web_name (« Saka »).
+    full_names = {e["id"]: f"{e['first_name']} {e['second_name']}" for e in bootstrap["elements"]}
+    players = players_table(bootstrap)[["element", "code", "position"]]
+    players["name"] = players["element"].map(full_names)
+    frames = []
+    for element in players["element"]:
+        history = client.player_history(int(element))["history"]
+        if history:
+            frames.append(pd.DataFrame(history))
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True).rename(columns={"round": "GW"})
+    df = df[df["fixture"].isin(fixtures)].copy()
+    # Le club vient du match, pas de bootstrap : un joueur transféré en cours de saison
+    # garde ainsi son ancien club pour les matchs joués avec lui.
+    home = df["fixture"].map(lambda f: teams[fixtures[f]["team_h"]])
+    away = df["fixture"].map(lambda f: teams[fixtures[f]["team_a"]])
+    df["team"] = home.where(df["was_home"], away)
+    for col in ("influence", "creativity", "threat", "ict_index"):
+        df[col] = pd.to_numeric(df[col])  # L'API renvoie ces valeurs en chaînes.
+    df = df.merge(players, on="element")
+    df["season"] = current_season(bootstrap)
+    df["price"] = df["value"] / 10
+    return df

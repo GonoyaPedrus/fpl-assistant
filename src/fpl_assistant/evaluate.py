@@ -22,3 +22,14 @@ def metrics(y_true: pd.Series, y_pred: pd.Series) -> dict[str, float]:
 def baseline_predict(df: pd.DataFrame, window: int = 5) -> pd.Series:
     """Prédit la moyenne des `window` dernières journées (0 si aucun historique)."""
     return df[f"total_points_avg{window}"].fillna(0.0)
+
+
+def top_k_points(df: pd.DataFrame, pred: pd.Series, k: int = 20) -> float:
+    """Points réels moyens des `k` joueurs les mieux prédits, journée par journée.
+
+    Plus proche de l'usage FPL que le RMSE : on choisit des joueurs, on ne parie pas sur
+    un score exact.
+    """
+    # Égalités départagées par `element` pour un résultat indépendant de l'ordre des lignes.
+    ranked = df.assign(_pred=pred).sort_values(["_pred", "element"], ascending=[False, True])
+    return float(ranked.groupby(["season", "GW"]).head(k)["total_points"].mean())
