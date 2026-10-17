@@ -1,0 +1,76 @@
+name: Ingestion
+
+# Chaque matin, regarde si une nouvelle journée FPL est terminée et validée (bonus compris)
+# ou si le format des données a changé. Si oui, relance l'ingestion et publie
+# data/gw.parquet dans la release « data-latest ».
+#
+# Attention : GitHub désactive les workflows planifiés d'un dépôt public après 60 jours sans
+# activité sur le dépôt. Le réactiver depuis l'onglet Actions si besoin.
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Réingérer même sans nouvelle journée"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # Pour créer la release et y déposer les fichiers.
+
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+
+      - name: Comparer la dernière journée validée à celle publiée
+        id: check
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          latest="$(fpl latest)"
+          if ! [[ "$latest" =~ ^[0-9]{4}-[0-9]{2}:[0-9]+:v[0-9]+$ ]]; then
+            echo "::notice::Pas de journée exploitable côté FPL (« $latest »), rien à faire."
+            exit 0
+          fi
+          if out="$(gh release view data-latest 2>&1)"; then
+            # Le marqueur peut manquer si une publication précédente a échoué à mi-chemin.
+            published="$(gh release download data-latest -p latest.txt -O - 2>/dev/null || true)"
+          elif [[ "$out" == *"release not found"* ]]; then
+            published=""
+          else
+            echo "$out"
+            exit 1
+          fi
+          echo "Validée : $latest / publiée : ${published:-aucune}"
+          if [ "$latest" != "$published" ] || [ "$FORCE" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ingestion
+        if: steps.check.outputs.run == 'true'
+        run: fpl ingest --strict --out data/gw.parquet
+
+      - name: Publication
+        if: steps.check.outputs.run == 'true'
+        run: |
+          gh release view data-latest >/dev/null 2>&1 || gh release create data-latest \
+            --title "Données FPL" --latest=false \
+            --notes "Historique par journée, mis à jour automatiquement après chaque journée."
+          # Les données d'abord, le marqueur ensuite : si l'envoi échoue, le marqueur reste
+          # ancien et le prochain passage republie.
+          gh release upload data-latest data/gw.parquet --clobber
+          gh release upload data-latest data/latest.txt --clobber
