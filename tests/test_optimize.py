@@ -85,3 +85,24 @@ def test_rejects_current_players_missing_from_candidates():
     players = make_players()
     with pytest.raises(ValueError, match="absents"):
         pick_squad(players, current=[*players.index[:14], 999])
+
+
+def test_keeps_four_players_from_one_club_but_never_adds_one():
+    players = make_players()
+    current = pick_squad(players).squad.index
+    # Un joueur de l'effectif rejoint un club qui en compte déjà trois.
+    club = players.loc[current, "team"].value_counts().idxmax()
+    mover = players.loc[current][players.loc[current, "team"] != club].index[0]
+    players.loc[mover, "team"] = club
+    assert (players.loc[current, "team"] == club).sum() == MAX_PER_TEAM + 1
+
+    held = pick_squad(players, current=current, max_transfers=0)
+    assert set(held.squad.index) == set(current)
+    moved = pick_squad(players, current=current, free_transfers=5)
+    assert (moved.squad["team"] == club).sum() <= MAX_PER_TEAM + 1
+
+
+def test_bench_points_are_reported():
+    result = pick_squad(make_players())
+    bench = result.squad.loc[~result.squad.index.isin(result.xi.index), "xp"].sum()
+    assert result.bench_points == pytest.approx(bench)

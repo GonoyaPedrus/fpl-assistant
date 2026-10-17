@@ -1,4 +1,6 @@
+import pandas as pd
 import pytest
+import requests
 
 from fpl_assistant.transfers import current_team, free_transfers, selling_price
 
@@ -34,6 +36,10 @@ class FakeClient:
         self.started = started
 
     def entry(self, entry):
+        if entry == 404:
+            resp = requests.Response()
+            resp.status_code = 404
+            raise requests.HTTPError("404 Client Error", response=resp)
         return {"started_event": self.started}
 
     def entry_history(self, entry):
@@ -50,19 +56,25 @@ class FakeClient:
             {"element_in": 1, "element_in_cost": 90, "event": 3, "time": "2026-09-04T10:00Z"},
         ]
 
-    def player_history(self, element):
-        return {"history": [{"round": 1, "value": 60}, {"round": 2, "value": 61}]}
-
 
 BOOTSTRAP = {
-    "events": [{"id": 3, "is_current": True}, {"id": 4, "is_next": True}],
+    "events": [
+        {"id": 3, "is_current": True, "deadline_time": "2026-08-15T17:30:00Z"},
+        {"id": 4, "is_next": True, "deadline_time": "2026-08-22T17:30:00Z"},
+    ],
     "elements": [{"id": e, "now_cost": 64} for e in range(1, 7)],
 }
+# Historique par match : 6,0 M£ en J1, 6,1 en J2 (et une ligne de la saison passée).
+MATCHES = pd.DataFrame(
+    {"season": ["2026-27"] * 4 + ["2025-26"], "GW": [2, 1, 2, 1, 1],
+     "element": [1, 1, 3, 3, 3], "price": [6.1, 6.0, 6.1, 6.0, 9.9]}
+)  # fmt: skip
 
 
 def test_current_team_reverts_free_hit_and_estimates_selling_prices():
-    team = current_team(FakeClient(), 1, BOOTSTRAP)
-    assert team.gw == 3 and team.elements == [1, 2, 3]  # L'effectif d'avant le free hit.
+    team = current_team(FakeClient(), 1, BOOTSTRAP, MATCHES)
+    assert team.gw == 3 and team.squad_gw == 2  # L'effectif d'avant le free hit.
+    assert team.elements == [1, 2, 3]
     assert team.bank == pytest.approx(1.4)
     # 1 et 3 : achetés 6,0 en J1 ; 2 : acheté 5,0 en J2. Tous valent 6,4 aujourd'hui.
     assert team.selling == pytest.approx({1: 6.2, 2: 5.7, 3: 6.2})
@@ -70,6 +82,8 @@ def test_current_team_reverts_free_hit_and_estimates_selling_prices():
     assert team.free_transfers == 1  # Le free hit garde celui de la J3.
 
 
-def test_team_not_started_yet():
+def test_team_not_started_yet_or_unknown():
     with pytest.raises(ValueError, match="démarre en J4"):
-        current_team(FakeClient(started=4), 1, BOOTSTRAP)
+        current_team(FakeClient(started=4), 1, BOOTSTRAP, MATCHES)
+    with pytest.raises(ValueError, match="introuvable"):
+        current_team(FakeClient(), 404, BOOTSTRAP, MATCHES)

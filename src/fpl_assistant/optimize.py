@@ -28,6 +28,7 @@ class Squad:
     captain: Any  # Label d'index du capitaine dans `players`.
     cost: float
     expected_points: float  # XI + capitaine, avant pénalité.
+    bench_points: float = 0.0  # Points attendus du banc, comptés à `bench_weight` dans le choix.
     transfers: int = 0  # Joueurs achetés par rapport à l'effectif actuel.
     hit_points: float = 0.0  # Pénalité des transferts payants.
 
@@ -61,9 +62,9 @@ def pick_squad(
     df = players.reset_index(drop=True)  # Index positionnel : noms de variables uniques.
     rows = range(len(df))
     xp, price = df["xp"].to_numpy(), df["price"].to_numpy()
-    if current is not None and set(current) - set(players.index):
-        missing = sorted(set(current) - set(players.index))
-        raise ValueError(f"Joueurs de l'effectif absents des candidats : {missing}")
+    missing = set(current) - set(players.index) if current is not None else set()
+    if missing:
+        raise ValueError(f"Joueurs de l'effectif absents des candidats : {sorted(missing)}")
     owned = players.index.isin([] if current is None else list(current))
 
     prob = pulp.LpProblem("fpl_squad", pulp.LpMaximize)
@@ -96,7 +97,10 @@ def pick_squad(
         prob += pulp.lpSum(in_xi[i] for i in members) >= XI_MIN[pos]
         prob += pulp.lpSum(in_xi[i] for i in members) <= XI_MAX[pos]
     for members in df.groupby("team").groups.values():
-        prob += pulp.lpSum(in_squad[i] for i in members) <= MAX_PER_TEAM
+        # Un joueur transféré d'un club à l'autre peut en laisser 4 du même club dans
+        # l'effectif : on peut les garder, pas en ajouter.
+        limit = max(MAX_PER_TEAM, int(owned[members].sum()))
+        prob += pulp.lpSum(in_squad[i] for i in members) <= limit
 
     status = prob.solve(pulp.PULP_CBC_CMD(msg=False))
     if pulp.LpStatus[status] != "Optimal":
@@ -104,6 +108,7 @@ def pick_squad(
 
     chosen = [i for i in rows if in_squad[i].value() > 0.5]
     xi = [i for i in rows if in_xi[i].value() > 0.5]
+    bench = [i for i in chosen if i not in xi]
     cap = next(i for i in rows if captain[i].value() > 0.5)
     n_bought = sum(not owned[i] for i in chosen) if current is not None else 0
     return Squad(
@@ -112,6 +117,7 @@ def pick_squad(
         captain=players.index[cap],
         cost=float(price[chosen].sum()),
         expected_points=float(xp[xi].sum() + xp[cap]),
+        bench_points=float(xp[bench].sum()),
         transfers=n_bought,
         hit_points=hit_cost * max(n_bought - free_transfers, 0) if current is not None else 0.0,
     )

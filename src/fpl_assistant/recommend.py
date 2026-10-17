@@ -147,7 +147,8 @@ def plan_transfers(
     """
     client = client or api.FPLClient()
     bootstrap = client.bootstrap()
-    team = transfers.current_team(client, entry, bootstrap)  # Avant l'entraînement : rapide.
+    check_fresh(history, bootstrap)  # Avant les appels API de l'équipe et l'entraînement.
+    team = transfers.current_team(client, entry, bootstrap, history)
     if free_transfers is not None:
         team.free_transfers = free_transfers
     gw, preds = _next_predictions(history, client, bootstrap)
@@ -161,5 +162,6 @@ def plan_transfers(
         free_transfers=team.free_transfers,
         max_transfers=max_transfers,
     )
-    hold = pick_squad(pool, budget=team.budget, current=team.elements, max_transfers=0)
+    # Sans transfert, seuls le XI et le capitaine restent à choisir parmi les 15.
+    hold = pick_squad(pool.loc[team.elements], budget=team.budget, current=team.elements)
     return TransferPlan(gw, team, pool, best, hold)

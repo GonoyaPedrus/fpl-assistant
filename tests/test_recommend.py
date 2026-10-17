@@ -4,7 +4,7 @@ import pytest
 
 from fpl_assistant import recommend
 from fpl_assistant.api import players_table
-from fpl_assistant.optimize import pick_squad
+from fpl_assistant.optimize import BENCH_WEIGHT, pick_squad
 from fpl_assistant.recommend import (
     availability,
     candidate_pool,
@@ -124,9 +124,14 @@ def league(n_teams=10):
     ]  # fmt: skip
     bootstrap = {
         "teams": [{"id": k, "name": f"T{k}"} for k in range(1, n_teams + 1)],
-        "events": [{"id": 1, "is_current": True}, {"id": 2, "is_next": True}],
+        "events": [
+            {"id": 1, "is_current": True, "finished": True, "data_checked": True,
+             "deadline_time": "2026-08-14T17:30:00Z"},
+            {"id": 2, "is_next": True, "finished": False, "data_checked": False,
+             "deadline_time": "2026-08-21T17:30:00Z"},
+        ],
         "elements": elements,
-    }
+    }  # fmt: skip
     preds = pd.DataFrame(
         {"element": [e["id"] for e in elements],
          "xp": [1.0 + e["id"] * 13 % 70 / 10 for e in elements]}
@@ -153,10 +158,6 @@ class LeagueClient:
     def entry_transfers(self, entry):
         return []
 
-    def player_history(self, element):
-        now = self._bootstrap["elements"][element - 1]["now_cost"]
-        return {"history": [{"round": 1, "value": now - 5}]}  # A pris 0,5 M£ depuis la J1.
-
 
 def test_plan_transfers_uses_selling_prices_and_compares_with_holding(monkeypatch):
     bootstrap, preds = league()
@@ -165,8 +166,17 @@ def test_plan_transfers_uses_selling_prices_and_compares_with_holding(monkeypatc
     preds["xp"] = preds["xp"].to_numpy()[::-1]
     monkeypatch.setattr(recommend, "_next_predictions", lambda *_: (2, preds))
 
-    plan = plan_transfers(None, 1, client=LeagueClient(bootstrap, squad))
     now = {e["id"]: e["now_cost"] / 10 for e in bootstrap["elements"]}
+    # Chaque joueur a pris 0,5 M£ depuis la J1.
+    matches = pd.DataFrame(
+        {
+            "season": "2026-27",
+            "GW": 1,
+            "element": list(now),
+            "price": [p - 0.5 for p in now.values()],
+        }
+    )
+    plan = plan_transfers(matches, 1, client=LeagueClient(bootstrap, squad))
     # Revente : achat à now - 0,5, puis la moitié de la hausse (0,2) : now - 0,3.
     assert plan.pool.loc[squad, "price"].to_numpy() == pytest.approx([now[e] - 0.3 for e in squad])
     assert plan.team.budget == pytest.approx(0.5 + sum(now[e] - 0.3 for e in squad))
@@ -174,4 +184,9 @@ def test_plan_transfers_uses_selling_prices_and_compares_with_holding(monkeypatc
     assert plan.best.cost <= plan.team.budget + 1e-6
     assert len(plan.sold) == len(plan.bought) == plan.best.transfers > 0
     assert plan.best.hit_points == 4 * max(plan.best.transfers - 1, 0)
-    assert plan.best.expected_points - plan.best.hit_points >= plan.hold.expected_points
+
+    # Le choix compte le banc à 10 % : c'est ce score qui ne peut que s'améliorer.
+    def score(s):
+        return s.expected_points + BENCH_WEIGHT * s.bench_points - s.hit_points
+
+    assert score(plan.best) >= score(plan.hold) - 1e-6

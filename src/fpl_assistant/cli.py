@@ -19,8 +19,12 @@ from fpl_assistant import (
     features,
     ingest,
     model,
+    optimize,
     recommend,
+    transfers,
 )
+
+POSITION_ORDER = {pos: i for i, pos in enumerate(POSITIONS)}
 
 
 def _prepare(path: Path) -> pd.DataFrame:
@@ -40,10 +44,9 @@ def _report(label: str, test: pd.DataFrame, pred: pd.Series) -> None:
 
 
 def _print_squad(title: str, squad) -> None:
-    order = {pos: i for i, pos in enumerate(POSITIONS)}
     table = squad.squad.assign(
         bench=~squad.squad.index.isin(squad.xi.index),
-        _order=squad.squad["position"].map(order),
+        _order=squad.squad["position"].map(POSITION_ORDER),
     )
     # Titulaires par poste ; banc dans l'ordre des remplacements FPL : gardien d'abord,
     # puis les joueurs de champ du plus au moins prometteur.
@@ -70,18 +73,17 @@ def _print_squad(title: str, squad) -> None:
 def _print_transfers(plan, estimated: bool) -> None:
     team, best, hold = plan.team, plan.best, plan.hold
     print(
-        f"Ton équipe à la deadline de la J{team.gw} : banque {team.bank:.1f} M£, "
+        f"Ton équipe (effectif de la J{team.squad_gw}) : banque {team.bank:.1f} M£, "
         f"{team.free_transfers} transfert(s) gratuit(s) pour la J{plan.gw}"
         + (" (estimation, corrige avec --free-transfers)" if estimated else "")
     )
-    order = {pos: i for i, pos in enumerate(POSITIONS)}
 
     def ranked(elements):
-        rows = plan.pool.loc[elements].assign(_order=lambda d: d["position"].map(order))
+        rows = plan.pool.loc[elements].assign(_order=lambda d: d["position"].map(POSITION_ORDER))
         return rows.sort_values(["_order", "xp"], ascending=[True, False])
 
     if not plan.bought:
-        print("Aucun transfert conseillé : garde ton transfert gratuit.")
+        print("Aucun transfert conseillé.")
     else:
         # Même nombre de départs et d'arrivées par poste : on les apparie poste par poste.
         for (_, out), (_, in_) in zip(
@@ -95,9 +97,14 @@ def _print_transfers(plan, estimated: bool) -> None:
             print(f"Pénalité : -{best.hit_points:.0f} pts")
         net = best.expected_points - best.hit_points
         print(
-            f"Points attendus : {net:.1f} avec ces transferts (pénalité déduite), "
-            f"{hold.expected_points:.1f} sans transfert"
+            f"Points attendus (XI + capitaine) : {net:.1f} avec ces transferts, pénalité "
+            f"déduite, contre {hold.expected_points:.1f} sans transfert"
         )
+        if abs(best.bench_points - hold.bench_points) > 0.05:
+            print(
+                f"Banc : {best.bench_points:.1f} pts contre {hold.bench_points:.1f}, "
+                f"compté à {optimize.BENCH_WEIGHT * 100:.0f} % dans le choix"
+            )
     print(
         "Prix de revente estimés : l'API publique ne donne pas le prix d'achat exact "
         "des joueurs pris à la création de l'équipe."
@@ -127,9 +134,19 @@ def main(argv: list[str] | None = None) -> None:
     p_tr.add_argument("--entry", type=int, required=True, help="ID d'équipe FPL (dans son URL)")
     p_tr.add_argument("--data", type=Path, default=DEFAULT_DATA)
     p_tr.add_argument(
-        "--free-transfers", type=int, help="Corrige l'estimation des transferts gratuits"
+        "--free-transfers",
+        type=int,
+        choices=range(transfers.MAX_FREE_TRANSFERS + 1),
+        metavar=f"0-{transfers.MAX_FREE_TRANSFERS}",
+        help="Corrige l'estimation des transferts gratuits",
     )
-    p_tr.add_argument("--max-transfers", type=int, help="Nombre maximum de transferts")
+    p_tr.add_argument(
+        "--max-transfers",
+        type=int,
+        choices=range(16),
+        metavar="0-15",
+        help="Nombre maximum de transferts",
+    )
 
     for name, help_ in [
         ("baseline", "Évalue la baseline forme récente"),
