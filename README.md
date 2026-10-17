@@ -14,6 +14,7 @@ fpl ingest      # ou tout retélécharger : vaastav + saison en cours via l'API 
 fpl baseline    # évalue la baseline « forme récente » sur un split temporel
 fpl train       # entraîne LightGBM et le compare à la baseline
 fpl recommend   # équipe de 15 recommandée pour la prochaine journée (--budget 100)
+fpl transfers --entry 1234567   # transferts conseillés depuis ton équipe FPL
 pytest
 ```
 
@@ -44,10 +45,22 @@ LightGBM sur des features connues avant la deadline : forme sur 3 et 5 journées
 
 À lancer après la validation de la journée en cours (`fpl pull` récupère les données publiées le matin), sinon la forme ignore la dernière journée.
 
+## Transferts
+
+`fpl transfers --entry <ID>` part de ton équipe (l'ID est dans l'URL de la page « Points » sur le site FPL) et cherche les transferts qui maximisent les points attendus de la prochaine journée, pénalité de -4 par transfert payant déduite. Il affiche les départs et arrivées, les points attendus avec et sans transfert, puis l'effectif et le capitaine.
+
+Tout vient de l'API publique, sans connexion, avec trois limites :
+
+- l'effectif est celui de la dernière deadline passée : les transferts déjà faits pour la prochaine journée n'y sont pas ;
+- les transferts gratuits sont estimés depuis l'historique de l'équipe (un par journée, jusqu'à cinq, gardés pendant un wildcard ou un free hit) : `--free-transfers N` corrige l'estimation, `--max-transfers N` plafonne le nombre de transferts ;
+- les prix de revente suivent la règle FPL (la moitié de la plus-value), mais le prix d'achat d'un joueur pris à la création de l'équipe est celui de la journée de départ, pas celui du jour exact.
+
+L'horizon est d'une seule journée : un transfert gratuit sera utilisé dès qu'il rapporte un peu, même si le garder pour la semaine suivante vaudrait mieux. Le gain affiché aide à trancher.
+
 ## Feuille de route
 
 1. ~~Ingestion + baseline forme récente évaluée sur split temporel~~
 2. ~~Modèle LightGBM qui bat la baseline~~ ; à enrichir : minutes attendues, xG/xA, statut médical
 3. ~~Optimiseur PuLP branché sur les prédictions de la prochaine journée~~ (`fpl recommend`)
-4. Transferts : partir de mon équipe actuelle, coût des transferts (-4), horizon de plusieurs journées
+4. ~~Transferts depuis mon équipe actuelle, avec le coût des transferts (-4)~~ (`fpl transfers`) ; à faire : horizon de plusieurs journées
 5. Recommandation hebdomadaire avant la deadline (l'ingestion après chaque journée est en place), puis une interface

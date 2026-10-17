@@ -54,3 +54,34 @@ def test_duplicate_index_labels_are_handled():
     players = make_players()
     players.index = [i // 2 for i in range(len(players))]
     assert len(pick_squad(players).squad) == 15
+
+
+def test_no_pointless_transfer_from_an_optimal_squad():
+    players = make_players()
+    current = pick_squad(players).squad.index
+    result = pick_squad(players, current=current, free_transfers=1)
+    assert result.transfers == 0 and result.hit_points == 0
+    assert set(result.squad.index) == set(current)
+
+
+def test_transfers_pay_hits_beyond_free_transfers():
+    players = make_players()
+    current = pick_squad(players).squad.index
+    star = players[~players.index.isin(current) & (players["position"] == "MID")]["price"].idxmin()
+    players.loc[star, "xp"] = 50.0
+
+    free = pick_squad(players, current=current, free_transfers=5)
+    assert star in free.squad.index and free.hit_points == 0
+
+    paid = pick_squad(players, current=current, free_transfers=0)
+    assert star in paid.squad.index and paid.hit_points == 4 * paid.transfers
+
+    assert pick_squad(players, current=current, free_transfers=0, hit_cost=1000).transfers == 0
+    held = pick_squad(players, current=current, max_transfers=0)
+    assert set(held.squad.index) == set(current)
+
+
+def test_rejects_current_players_missing_from_candidates():
+    players = make_players()
+    with pytest.raises(ValueError, match="absents"):
+        pick_squad(players, current=[*players.index[:14], 999])

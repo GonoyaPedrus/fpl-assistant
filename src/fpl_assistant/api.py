@@ -40,7 +40,17 @@ class FPLClient:
     def player_history(self, element: int) -> dict[str, Any]:
         return self._get(f"element-summary/{element}/")
 
+    def entry(self, entry: int) -> dict[str, Any]:
+        return self._get(f"entry/{entry}/")
+
+    def entry_history(self, entry: int) -> dict[str, Any]:
+        return self._get(f"entry/{entry}/history/")
+
+    def entry_transfers(self, entry: int) -> list[dict[str, Any]]:
+        return self._get(f"entry/{entry}/transfers/")
+
     def entry_picks(self, entry: int, gw: int) -> dict[str, Any]:
+        """Effectif à la deadline de `gw` : visible seulement une fois cette deadline passée."""
         return self._get(f"entry/{entry}/event/{gw}/picks/")
 
 
@@ -78,6 +88,11 @@ def players_table(bootstrap: dict[str, Any]) -> pd.DataFrame:
 
 def next_gameweek(bootstrap: dict[str, Any]) -> int | None:
     return next((e["id"] for e in bootstrap["events"] if e.get("is_next")), None)
+
+
+def current_gameweek(bootstrap: dict[str, Any]) -> int | None:
+    """Dernière journée dont la deadline est passée (en cours ou terminée)."""
+    return next((e["id"] for e in bootstrap["events"] if e.get("is_current")), None)
 
 
 def current_season(bootstrap: dict[str, Any]) -> str:

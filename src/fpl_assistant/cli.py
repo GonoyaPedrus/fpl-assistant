@@ -1,4 +1,5 @@
-"""Ligne de commande : `fpl ingest`, `pull`, `latest`, `baseline`, `train`, `recommend`."""
+"""Ligne de commande : `fpl ingest`, `pull`, `latest`, `baseline`, `train`, `recommend`,
+`transfers`."""
 
 from __future__ import annotations
 
@@ -38,7 +39,7 @@ def _report(label: str, test: pd.DataFrame, pred: pd.Series) -> None:
     )
 
 
-def _print_squad(gw: int, squad) -> None:
+def _print_squad(title: str, squad) -> None:
     order = {pos: i for i, pos in enumerate(POSITIONS)}
     table = squad.squad.assign(
         bench=~squad.squad.index.isin(squad.xi.index),
@@ -48,7 +49,7 @@ def _print_squad(gw: int, squad) -> None:
     # puis les joueurs de champ du plus au moins prometteur.
     table["_rank"] = table["_order"].where(~table["bench"], (table["position"] != "GK") * 1)
     table = table.sort_values(["bench", "_rank", "xp"], ascending=[True, True, False])
-    print(f"Équipe recommandée pour la J{gw} ({squad.cost:.1f} M£)")
+    print(f"{title} ({squad.cost:.1f} M£)")
     for element, row in table.iterrows():
         cap = " (C)" if element == squad.captain else ""
         notes = []
@@ -64,6 +65,45 @@ def _print_squad(gw: int, squad) -> None:
             f" {row['team']:15} {row['price']:5.1f} M£  {row['xp']:4.1f} pts{flag}"
         )
     print(f"Points attendus (XI + capitaine) : {squad.expected_points:.1f}")
+
+
+def _print_transfers(plan, estimated: bool) -> None:
+    team, best, hold = plan.team, plan.best, plan.hold
+    print(
+        f"Ton équipe à la deadline de la J{team.gw} : banque {team.bank:.1f} M£, "
+        f"{team.free_transfers} transfert(s) gratuit(s) pour la J{plan.gw}"
+        + (" (estimation, corrige avec --free-transfers)" if estimated else "")
+    )
+    order = {pos: i for i, pos in enumerate(POSITIONS)}
+
+    def ranked(elements):
+        rows = plan.pool.loc[elements].assign(_order=lambda d: d["position"].map(order))
+        return rows.sort_values(["_order", "xp"], ascending=[True, False])
+
+    if not plan.bought:
+        print("Aucun transfert conseillé : garde ton transfert gratuit.")
+    else:
+        # Même nombre de départs et d'arrivées par poste : on les apparie poste par poste.
+        for (_, out), (_, in_) in zip(
+            ranked(plan.sold).iterrows(), ranked(plan.bought).iterrows(), strict=True
+        ):
+            print(
+                f"  {out['position']:3} {out['name']:16} {out['price']:4.1f} M£ {out['xp']:4.1f}"
+                f" pts  ->  {in_['name']:16} {in_['price']:4.1f} M£ {in_['xp']:4.1f} pts"
+            )
+        if best.hit_points:
+            print(f"Pénalité : -{best.hit_points:.0f} pts")
+        net = best.expected_points - best.hit_points
+        print(
+            f"Points attendus : {net:.1f} avec ces transferts (pénalité déduite), "
+            f"{hold.expected_points:.1f} sans transfert"
+        )
+    print(
+        "Prix de revente estimés : l'API publique ne donne pas le prix d'achat exact "
+        "des joueurs pris à la création de l'équipe."
+    )
+    print()
+    _print_squad(f"Effectif pour la J{plan.gw}", best)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -83,6 +123,13 @@ def main(argv: list[str] | None = None) -> None:
     p_rec = sub.add_parser("recommend", help="Équipe recommandée pour la prochaine journée")
     p_rec.add_argument("--data", type=Path, default=DEFAULT_DATA)
     p_rec.add_argument("--budget", type=float, default=100.0, help="En M£ (défaut 100)")
+    p_tr = sub.add_parser("transfers", help="Transferts conseillés depuis ton équipe FPL")
+    p_tr.add_argument("--entry", type=int, required=True, help="ID d'équipe FPL (dans son URL)")
+    p_tr.add_argument("--data", type=Path, default=DEFAULT_DATA)
+    p_tr.add_argument(
+        "--free-transfers", type=int, help="Corrige l'estimation des transferts gratuits"
+    )
+    p_tr.add_argument("--max-transfers", type=int, help="Nombre maximum de transferts")
 
     for name, help_ in [
         ("baseline", "Évalue la baseline forme récente"),
@@ -110,9 +157,18 @@ def main(argv: list[str] | None = None) -> None:
             print(exc, file=sys.stderr)
         return
 
-    if args.cmd == "recommend":
+    if args.cmd in ("recommend", "transfers"):
         try:
-            next_gw, squad = recommend.recommend(pd.read_parquet(args.data), budget=args.budget)
+            history = pd.read_parquet(args.data)
+            if args.cmd == "recommend":
+                next_gw, squad = recommend.recommend(history, budget=args.budget)
+            else:
+                plan = recommend.plan_transfers(
+                    history,
+                    args.entry,
+                    free_transfers=args.free_transfers,
+                    max_transfers=args.max_transfers,
+                )
         except FileNotFoundError:
             parser.exit(1, f"Pas de données dans {args.data} : lance `fpl pull`.\n")
         except ModuleNotFoundError as exc:
@@ -121,7 +177,10 @@ def main(argv: list[str] | None = None) -> None:
             parser.exit(1, f"API FPL injoignable : {exc}\n")
         except ValueError as exc:
             parser.exit(1, f"{exc}\n")
-        _print_squad(next_gw, squad)
+        if args.cmd == "recommend":
+            _print_squad(f"Équipe recommandée pour la J{next_gw}", squad)
+        else:
+            _print_transfers(plan, estimated=args.free_transfers is None)
         return
 
     gw = _prepare(args.data)
