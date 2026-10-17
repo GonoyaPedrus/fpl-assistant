@@ -11,6 +11,16 @@ TEAM_WINDOW = 6
 FIXTURE_COLS = ["was_home", "team_att", "team_def", "opp_att", "opp_def"]
 
 
+def _lagged_mean(df: pd.DataFrame, keys: list[str], cols: list[str], window: int) -> pd.DataFrame:
+    """Moyenne glissante des `window` lignes précédentes par groupe (la ligne courante exclue).
+
+    `df` doit être trié par groupe puis par journée.
+    """
+    past = df.groupby(keys, sort=False)[cols].shift(1)
+    rolled = past.groupby([df[k] for k in keys], sort=False).rolling(window, min_periods=1)
+    return rolled.mean().reset_index(level=list(range(len(keys))), drop=True)
+
+
 def add_fixture_features(matches: pd.DataFrame) -> pd.DataFrame:
     """Ajoute la force récente de l'équipe et de l'adversaire à chaque match d'un joueur.
 
@@ -18,6 +28,10 @@ def add_fixture_features(matches: pd.DataFrame) -> pd.DataFrame:
     `TEAM_WINDOW` journées précédentes de la saison. Le décalage se fait par journée.
     """
     played = matches.dropna(subset=["team_h_score", "team_a_score"])
+    n_teams = played.groupby(["season", "fixture"])["team"].nunique()
+    if (n_teams > 2).any():
+        bad = n_teams[n_teams > 2].index.tolist()[:5]
+        raise ValueError(f"Matchs avec plus de deux clubs (étiquettes incohérentes) : {bad}")
     teams = played.groupby(["season", "fixture", "team"], as_index=False).agg(
         GW=("GW", "first"),
         was_home=("was_home", "first"),
@@ -29,12 +43,8 @@ def add_fixture_features(matches: pd.DataFrame) -> pd.DataFrame:
     teams["ga"] = teams["a"].where(home, teams["h"])
 
     per_gw = teams.groupby(["season", "team", "GW"], as_index=False)[["gf", "ga"]].mean()
-    per_gw = per_gw.sort_values(["season", "team", "GW"])
-    past = per_gw.groupby(["season", "team"])[["gf", "ga"]].shift(1)
-    rolled = past.groupby([per_gw["season"], per_gw["team"]]).rolling(TEAM_WINDOW, min_periods=1)
-    per_gw[["team_att", "team_def"]] = (
-        rolled.mean().reset_index(level=[0, 1], drop=True)[["gf", "ga"]].to_numpy()
-    )
+    lagged = _lagged_mean(per_gw, ["season", "team"], ["gf", "ga"], TEAM_WINDOW)
+    per_gw = per_gw.join(lagged.rename(columns={"gf": "team_att", "ga": "team_def"}))
 
     strength = teams[["season", "fixture", "team", "GW"]].merge(
         per_gw[["season", "team", "GW", "team_att", "team_def"]], on=["season", "team", "GW"]
@@ -46,7 +56,9 @@ def add_fixture_features(matches: pd.DataFrame) -> pd.DataFrame:
     pairs = strength.merge(opp, on=["season", "fixture"])
     pairs = pairs[pairs["team"] != pairs["opp"]]
     cols = ["season", "fixture", "team", "team_att", "team_def", "opp_att", "opp_def"]
-    return matches.merge(pairs[cols], on=["season", "fixture", "team"], how="left")
+    return matches.merge(
+        pairs[cols], on=["season", "fixture", "team"], how="left", validate="many_to_one"
+    )
 
 
 def to_gameweeks(df: pd.DataFrame) -> pd.DataFrame:
@@ -66,11 +78,7 @@ def add_form_features(gw: pd.DataFrame) -> pd.DataFrame:
     fait donc par journée : les deux matchs d'une double journée ne se voient pas entre eux.
     """
     gw = gw.sort_values([*KEYS, "GW"]).reset_index(drop=True)
-    grouped = gw.groupby(KEYS, sort=False)
-    past = grouped[ROLLING_COLS].shift(1)
-    past_grouped = past.groupby([gw["season"], gw["element"]], sort=False)
     for w in WINDOWS:
-        rolled = past_grouped.rolling(w, min_periods=1).mean().reset_index(level=[0, 1], drop=True)
-        gw = gw.join(rolled.add_suffix(f"_avg{w}"))
-    gw["n_past_gws"] = grouped.cumcount()
+        gw = gw.join(_lagged_mean(gw, KEYS, ROLLING_COLS, w).add_suffix(f"_avg{w}"))
+    gw["n_past_gws"] = gw.groupby(KEYS, sort=False).cumcount()
     return gw

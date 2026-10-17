@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from fpl_assistant import DEFAULT_DATA, evaluate, features, ingest
+from fpl_assistant import DEFAULT_DATA, evaluate, features, ingest, model
 
 
 def _prepare(path: Path) -> pd.DataFrame:
@@ -55,12 +55,12 @@ def main(argv: list[str] | None = None) -> None:
 
     gw = _prepare(args.data)
     train, test = evaluate.temporal_split(gw, args.test_season, args.test_from_gw)
+    if test.empty or train.empty:
+        parser.error(f"Split vide pour {args.test_season} à partir de la J{args.test_from_gw}")
     print(f"Test : {args.test_season} à partir de la J{args.test_from_gw}, {len(test)} lignes")
     for w in features.WINDOWS:
         _report(f"forme {w} J", test, evaluate.baseline_predict(test, w))
     if args.cmd == "train":
-        from fpl_assistant import model
-
         _report("LightGBM", test, model.predict(model.train(train), test))
 
 

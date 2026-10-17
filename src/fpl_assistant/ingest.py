@@ -62,23 +62,29 @@ def fetch_season(season: str, timeout: int = 60) -> pd.DataFrame:
 def fetch_current_season(client: api.FPLClient | None = None) -> pd.DataFrame:
     """Saison en cours depuis l'API officielle (une requête par joueur, quelques minutes)."""
     client = client or api.FPLClient()
-    return _clean(api.season_history(client, client.bootstrap()))
+    df = api.season_history(client, client.bootstrap())
+    return df if df.empty else _clean(df)  # Vide avant la J1.
 
 
 def ingest(
     seasons: tuple[str, ...] = DEFAULT_SEASONS, out: Path = DEFAULT_DATA, current: bool = True
 ) -> Path:
     frames = []
+    if current:
+        try:
+            live = fetch_current_season()
+        except requests.RequestException as exc:
+            log.warning("Saison en cours ignorée (API FPL) : %s", exc)
+        else:
+            if not live.empty:
+                frames.append(live)
+                # Entre deux saisons, l'API décrit encore la saison finie : pas de doublon.
+                seasons = tuple(s for s in seasons if s != live["season"].iloc[0])
     for season in seasons:
         try:
             frames.append(fetch_season(season))
         except requests.HTTPError as exc:
             log.warning("Saison %s ignorée : %s", season, exc)
-    if current:
-        try:
-            frames.append(fetch_current_season())
-        except requests.RequestException as exc:
-            log.warning("Saison en cours ignorée (API FPL) : %s", exc)
     if not frames:
         raise RuntimeError("Aucune saison téléchargée.")
     df = pd.concat(frames, ignore_index=True)

@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from fpl_assistant.features import (
     ROLLING_COLS,
@@ -65,3 +66,13 @@ def test_fixture_features_use_previous_gameweeks_only():
     # En J3, A a marqué 2 puis 3 : la moyenne ne contient pas le score de J3.
     assert out.loc[(3, "B"), "opp_att"] == 2.5
     assert out.loc[(3, "A"), "team_def"] == 0.5
+
+
+def test_fixture_features_reject_inconsistent_club_labels():
+    rows = [
+        {"season": "2024-25", "GW": 1, "fixture": 10, "team": team, "element": i,
+         "was_home": i == 0, "team_h_score": 1, "team_a_score": 0}
+        for i, team in enumerate(["A", "B", "C"])
+    ]  # fmt: skip
+    with pytest.raises(ValueError, match="plus de deux clubs"):
+        add_fixture_features(pd.DataFrame(rows))

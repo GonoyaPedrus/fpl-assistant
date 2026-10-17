@@ -27,7 +27,7 @@ LightGBM sur des features connues avant la deadline : forme sur 3 et 5 journées
 |---|---|---|---|---|---|
 | 2025-26, J20 → J38 | forme 5 J | 2,07 | 1,02 | 3,20 | 3,77 pts |
 | | LightGBM | **1,90** | **0,95** | **2,97** | **4,48 pts** |
-| 2024-25, J1 → J38 | forme 5 J | 2,13 | 1,06 | 3,13 | 4,09 pts |
+| 2024-25, J1 → J38 | forme 5 J | 2,13 | 1,06 | 3,13 | 4,19 pts |
 | | LightGBM | **1,96** | **1,01** | **2,86** | **4,73 pts** |
 
 « Top 20 » : points réels moyens des 20 joueurs les mieux classés par le modèle, journée par journée. C'est la métrique la plus proche d'une décision FPL.

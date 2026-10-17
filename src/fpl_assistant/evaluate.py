@@ -30,5 +30,6 @@ def top_k_points(df: pd.DataFrame, pred: pd.Series, k: int = 20) -> float:
     Plus proche de l'usage FPL que le RMSE : on choisit des joueurs, on ne parie pas sur
     un score exact.
     """
-    ranked = df.assign(_pred=pred).sort_values("_pred", ascending=False)
+    # Égalités départagées par `element` pour un résultat indépendant de l'ordre des lignes.
+    ranked = df.assign(_pred=pred).sort_values(["_pred", "element"], ascending=[False, True])
     return float(ranked.groupby(["season", "GW"]).head(k)["total_points"].mean())
