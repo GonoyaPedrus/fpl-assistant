@@ -1,4 +1,4 @@
-"""Ligne de commande : `fpl ingest`, `fpl pull`, `fpl latest`, `fpl baseline`, `fpl train`."""
+"""Ligne de commande : `fpl ingest`, `pull`, `latest`, `baseline`, `train`, `recommend`."""
 
 from __future__ import annotations
 
@@ -9,7 +9,16 @@ from pathlib import Path
 
 import pandas as pd
 
-from fpl_assistant import DEFAULT_DATA, api, evaluate, features, ingest, model
+from fpl_assistant import (
+    DEFAULT_DATA,
+    POSITIONS,
+    api,
+    evaluate,
+    features,
+    ingest,
+    model,
+    recommend,
+)
 
 
 def _prepare(path: Path) -> pd.DataFrame:
@@ -29,6 +38,26 @@ def _report(label: str, test: pd.DataFrame, pred: pd.Series) -> None:
     )
 
 
+def _print_squad(gw: int, squad) -> None:
+    order = {pos: i for i, pos in enumerate(POSITIONS)}
+    table = squad.squad.assign(
+        _order=squad.squad["position"].map(order),
+        role=lambda d: d.index.map(lambda i: "XI" if i in squad.xi.index else "banc"),
+        _bench=lambda d: d["role"] == "banc",
+    ).sort_values(["_bench", "_order", "xp"], ascending=[True, True, False])
+    print(f"Équipe recommandée pour la J{gw} ({squad.cost:.1f} M£)")
+    for element, row in table.iterrows():
+        cap = " (C)" if element == squad.captain else ""
+        flag = (
+            "" if row["status"] == "a" else f"  [{row['status']}, {row['chance_of_playing']:.0f} %]"
+        )
+        print(
+            f"  {row['role']:4} {row['position']:3} {row['name'] + cap:24} {row['team']:15}"
+            f" {row['price']:5.1f} M£  {row['xp']:4.1f} pts{flag}"
+        )
+    print(f"Points attendus (XI + capitaine) : {squad.expected_points:.1f}")
+
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(prog="fpl")
@@ -43,6 +72,9 @@ def main(argv: list[str] | None = None) -> None:
     p_pull = sub.add_parser("pull", help="Télécharge les données publiées par la GitHub Action")
     p_pull.add_argument("--out", type=Path, default=DEFAULT_DATA)
     sub.add_parser("latest", help="Dernière journée validée et version du format, ex. 2026-27:6:v1")
+    p_rec = sub.add_parser("recommend", help="Équipe recommandée pour la prochaine journée")
+    p_rec.add_argument("--data", type=Path, default=DEFAULT_DATA)
+    p_rec.add_argument("--budget", type=float, default=100.0, help="En M£ (défaut 100)")
 
     for name, help_ in [
         ("baseline", "Évalue la baseline forme récente"),
@@ -68,6 +100,14 @@ def main(argv: list[str] | None = None) -> None:
             print(ingest.marker(api.FPLClient().bootstrap()))
         except ValueError as exc:  # Rien à signaler : la sortie standard reste vide.
             print(exc, file=sys.stderr)
+        return
+
+    if args.cmd == "recommend":
+        try:
+            next_gw, squad = recommend.recommend(pd.read_parquet(args.data), budget=args.budget)
+        except ValueError as exc:
+            parser.exit(1, f"{exc}\n")
+        _print_squad(next_gw, squad)
         return
 
     gw = _prepare(args.data)

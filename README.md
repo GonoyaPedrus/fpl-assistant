@@ -13,6 +13,7 @@ fpl pull        # récupère les données déjà publiées (quelques secondes)
 fpl ingest      # ou tout retélécharger : vaastav + saison en cours via l'API (~3 min)
 fpl baseline    # évalue la baseline « forme récente » sur un split temporel
 fpl train       # entraîne LightGBM et le compare à la baseline
+fpl recommend   # équipe de 15 recommandée pour la prochaine journée (--budget 100)
 pytest
 ```
 
@@ -37,10 +38,16 @@ LightGBM sur des features connues avant la deadline : forme sur 3 et 5 journées
 
 « Top 20 » : points réels moyens des 20 joueurs les mieux classés par le modèle, journée par journée. C'est la métrique la plus proche d'une décision FPL.
 
+## Équipe recommandée
+
+`fpl recommend` lit le calendrier de la prochaine journée dans l'API officielle, entraîne LightGBM sur tout l'historique et prédit les points de chaque joueur (doubles journées comprises, 0 pour un club qui ne joue pas). Il multiplie ensuite par la probabilité de jouer (`chance_of_playing`, 0 si blessé, suspendu ou parti) et choisit les 15 joueurs, le XI et le capitaine avec l'optimiseur. Les prix sont ceux du jour.
+
+À lancer après la validation de la journée en cours (`fpl pull` récupère les données publiées le matin), sinon la forme ignore la dernière journée.
+
 ## Feuille de route
 
 1. ~~Ingestion + baseline forme récente évaluée sur split temporel~~
 2. ~~Modèle LightGBM qui bat la baseline~~ ; à enrichir : minutes attendues, xG/xA, statut médical
-3. Optimiseur PuLP branché sur les prédictions de la prochaine journée
+3. ~~Optimiseur PuLP branché sur les prédictions de la prochaine journée~~ (`fpl recommend`)
 4. Transferts : partir de mon équipe actuelle, coût des transferts (-4), horizon de plusieurs journées
 5. Recommandation hebdomadaire avant la deadline (l'ingestion après chaque journée est en place), puis une interface

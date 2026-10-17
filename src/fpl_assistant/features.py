@@ -26,13 +26,14 @@ def add_fixture_features(matches: pd.DataFrame) -> pd.DataFrame:
 
     `*_att` = buts marqués et `*_def` = buts encaissés par match, en moyenne sur les
     `TEAM_WINDOW` journées précédentes de la saison. Le décalage se fait par journée.
+    Les matchs pas encore joués (scores manquants) reçoivent aussi ces features, calculées
+    sur les journées jouées avant eux : c'est ce qui sert à prédire la prochaine journée.
     """
-    played = matches.dropna(subset=["team_h_score", "team_a_score"])
-    n_teams = played.groupby(["season", "fixture"])["team"].nunique()
+    n_teams = matches.groupby(["season", "fixture"])["team"].nunique()
     if (n_teams > 2).any():
         bad = n_teams[n_teams > 2].index.tolist()[:5]
         raise ValueError(f"Matchs avec plus de deux clubs (étiquettes incohérentes) : {bad}")
-    teams = played.groupby(["season", "fixture", "team"], as_index=False).agg(
+    teams = matches.groupby(["season", "fixture", "team"], as_index=False).agg(
         GW=("GW", "first"),
         was_home=("was_home", "first"),
         h=("team_h_score", "first"),
