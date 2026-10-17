@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from io import StringIO
 from pathlib import Path
 
@@ -16,15 +17,14 @@ log = logging.getLogger(__name__)
 VAASTAV_URL = (
     "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/{file}"
 )
-# Saisons terminées. Les précédentes n'ont pas la colonne `position` dans merged_gw.csv.
-DEFAULT_SEASONS = (
-    "2020-21",
-    "2021-22",
-    "2022-23",
-    "2023-24",
-    "2024-25",
-    "2025-26",
+RELEASE_URL = os.environ.get(
+    "FPL_DATA_URL",
+    "https://github.com/GonoyaPedrus/fpl-assistant/releases/download/data-latest/gw.parquet",
 )
+# Les saisons avant 2020-21 n'ont pas la colonne `position` dans merged_gw.csv.
+FIRST_SEASON = 2020
+# À incrémenter quand le format du parquet change : la GitHub Action republie alors les données.
+SCHEMA_VERSION = 1
 POSITION_ALIASES = {"GKP": "GK"}  # vaastav écrit parfois GKP (ex. 2021-22 J37).
 
 COLUMNS = [
@@ -59,36 +59,62 @@ def fetch_season(season: str, timeout: int = 60) -> pd.DataFrame:
     return _clean(df)
 
 
-def fetch_current_season(client: api.FPLClient | None = None) -> pd.DataFrame:
-    """Saison en cours depuis l'API officielle (une requête par joueur, quelques minutes)."""
-    client = client or api.FPLClient()
-    df = api.season_history(client, client.bootstrap())
-    return df if df.empty else _clean(df)  # Vide avant la J1.
+def seasons_before(season: str) -> tuple[str, ...]:
+    """Saisons terminées à prendre chez vaastav avant `season`, ex. « 2026-27 »."""
+    start = int(season[:4])
+    return tuple(f"{y}-{(y + 1) % 100:02d}" for y in range(FIRST_SEASON, start))
 
 
-def ingest(
-    seasons: tuple[str, ...] = DEFAULT_SEASONS, out: Path = DEFAULT_DATA, current: bool = True
-) -> Path:
+def marker(bootstrap: dict) -> str:
+    """Identifie un jeu de données : dernière journée validée et version du format."""
+    return f"{api.latest_label(bootstrap)}:v{SCHEMA_VERSION}"
+
+
+def ingest(out: Path = DEFAULT_DATA, strict: bool = False) -> Path:
+    """Écrit le parquet complet et, à côté, `latest.txt` avec son `marker`.
+
+    `strict=True` (utilisé par la GitHub Action) échoue au lieu d'ignorer une saison qui ne
+    se télécharge pas, pour ne jamais publier un historique incomplet.
+    """
+    client = api.FPLClient()
+    bootstrap = client.bootstrap()
+    season = api.current_season(bootstrap)
     frames = []
-    if current:
+    try:
+        live = api.season_history(client, bootstrap)
+        if not live.empty:  # Vide avant la J1.
+            frames.append(_clean(live))
+    except requests.RequestException as exc:
+        if strict:
+            raise
+        log.warning("Saison en cours ignorée (API FPL) : %s", exc)
+    for past in seasons_before(season):
         try:
-            live = fetch_current_season()
+            frames.append(fetch_season(past))
         except requests.RequestException as exc:
-            log.warning("Saison en cours ignorée (API FPL) : %s", exc)
-        else:
-            if not live.empty:
-                frames.append(live)
-                # Entre deux saisons, l'API décrit encore la saison finie : pas de doublon.
-                seasons = tuple(s for s in seasons if s != live["season"].iloc[0])
-    for season in seasons:
-        try:
-            frames.append(fetch_season(season))
-        except requests.HTTPError as exc:
-            log.warning("Saison %s ignorée : %s", season, exc)
+            if strict:
+                raise
+            log.warning("Saison %s ignorée : %s", past, exc)
     if not frames:
         raise RuntimeError("Aucune saison téléchargée.")
     df = pd.concat(frames, ignore_index=True)
     df["kickoff_time"] = pd.to_datetime(df["kickoff_time"], utc=True)
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)
+    out.with_name("latest.txt").write_text(marker(bootstrap) + "\n")
+    return out
+
+
+def pull(out: Path = DEFAULT_DATA, url: str = RELEASE_URL, timeout: int = 120) -> Path:
+    """Télécharge le jeu de données publié par la GitHub Action (évite ~3 min d'API)."""
+    resp = requests.get(url, timeout=timeout, stream=True)
+    if resp.status_code == 404:
+        raise RuntimeError("Aucune donnée publiée pour l'instant : lance `fpl ingest`.")
+    resp.raise_for_status()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".part")
+    with tmp.open("wb") as f:
+        for chunk in resp.iter_content(chunk_size=1 << 20):
+            f.write(chunk)
+    tmp.replace(out)  # Atomique : jamais de parquet tronqué en cas d'interruption.
     return out

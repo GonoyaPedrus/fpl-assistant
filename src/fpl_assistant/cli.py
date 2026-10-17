@@ -1,14 +1,15 @@
-"""Point d'entrée en ligne de commande : `fpl ingest`, `fpl baseline`, `fpl train`."""
+"""Ligne de commande : `fpl ingest`, `fpl pull`, `fpl latest`, `fpl baseline`, `fpl train`."""
 
 from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
 import pandas as pd
 
-from fpl_assistant import DEFAULT_DATA, evaluate, features, ingest, model
+from fpl_assistant import DEFAULT_DATA, api, evaluate, features, ingest, model
 
 
 def _prepare(path: Path) -> pd.DataFrame:
@@ -36,8 +37,12 @@ def main(argv: list[str] | None = None) -> None:
     p_ingest = sub.add_parser("ingest", help="Télécharge l'historique par journée")
     p_ingest.add_argument("--out", type=Path, default=DEFAULT_DATA)
     p_ingest.add_argument(
-        "--no-current", action="store_true", help="Sans la saison en cours (API FPL)"
+        "--strict", action="store_true", help="Échoue si une saison ne se télécharge pas"
     )
+
+    p_pull = sub.add_parser("pull", help="Télécharge les données publiées par la GitHub Action")
+    p_pull.add_argument("--out", type=Path, default=DEFAULT_DATA)
+    sub.add_parser("latest", help="Dernière journée validée et version du format, ex. 2026-27:6:v1")
 
     for name, help_ in [
         ("baseline", "Évalue la baseline forme récente"),
@@ -50,7 +55,19 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
     if args.cmd == "ingest":
-        print(f"Écrit : {ingest.ingest(out=args.out, current=not args.no_current)}")
+        print(f"Écrit : {ingest.ingest(out=args.out, strict=args.strict)}")
+        return
+    if args.cmd == "pull":
+        try:
+            print(f"Écrit : {ingest.pull(out=args.out)}")
+        except RuntimeError as exc:
+            parser.exit(1, f"{exc}\n")
+        return
+    if args.cmd == "latest":
+        try:
+            print(ingest.marker(api.FPLClient().bootstrap()))
+        except ValueError as exc:  # Rien à signaler : la sortie standard reste vide.
+            print(exc, file=sys.stderr)
         return
 
     gw = _prepare(args.data)
