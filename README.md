@@ -22,7 +22,7 @@ Saisons terminées issues de [vaastav/Fantasy-Premier-League](https://github.com
 
 ## Mise à jour automatique
 
-La GitHub Action [Ingestion](.github/workflows/ingest.yml) tourne chaque matin à 6 h UTC. Si une nouvelle journée est terminée et validée par la FPL (`fpl latest`, ex. `2026-27:6`), elle relance l'ingestion et publie `gw.parquet` dans la release [`data-latest`](https://github.com/GonoyaPedrus/fpl-assistant/releases/tag/data-latest). `fpl pull` télécharge ce fichier. On peut aussi la lancer à la main depuis l'onglet Actions (option « force »).
+La GitHub Action [Ingestion](.github/workflows/ingest.yml) tourne chaque matin à 6 h UTC. Si une nouvelle journée est terminée et validée par la FPL (`fpl latest`, ex. `2026-27:6:v1`), ou si le format des données a changé (`SCHEMA_VERSION`), elle relance l'ingestion et publie `gw.parquet` dans la release [`data-latest`](https://github.com/GonoyaPedrus/fpl-assistant/releases/tag/data-latest). `fpl pull` télécharge ce fichier. On peut aussi la lancer à la main depuis l'onglet Actions (option « force »). GitHub désactive les workflows planifiés après 60 jours sans activité sur le dépôt : il faut alors la réactiver dans l'onglet Actions.
 
 ## Modèle
 

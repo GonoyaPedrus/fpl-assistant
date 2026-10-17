@@ -74,6 +74,8 @@ def next_gameweek(bootstrap: dict[str, Any]) -> int | None:
 
 def current_season(bootstrap: dict[str, Any]) -> str:
     """Libellé de la saison en cours au format vaastav, ex. « 2026-27 »."""
+    if not bootstrap["events"]:
+        raise ValueError("Calendrier vide (remise à zéro de l'API entre deux saisons)")
     year = pd.Timestamp(bootstrap["events"][0]["deadline_time"]).year
     return f"{year}-{(year + 1) % 100:02d}"
 

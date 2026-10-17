@@ -1,3 +1,5 @@
+import pytest
+
 from fpl_assistant.api import latest_label, next_gameweek, players_table, season_history
 
 BOOTSTRAP = {
@@ -100,3 +102,8 @@ def test_latest_label():
     ]  # fmt: skip
     assert latest_label({"events": events}) == "2026-27:1"
     assert latest_label({"events": [{**events[0], "finished": False}]}) == "2026-27:0"
+
+
+def test_current_season_rejects_empty_calendar():
+    with pytest.raises(ValueError):
+        latest_label({"events": []})
