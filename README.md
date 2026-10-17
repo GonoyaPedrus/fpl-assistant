@@ -1,1 +1,41 @@
 # fpl-assistant
+
+Prédire les points Fantasy Premier League de chaque joueur, puis choisir l'effectif de 15 qui maximise les points attendus sous les règles du jeu (budget 100 M£, 2/5/5/3 par poste, 3 joueurs max par club, XI valide et capitaine).
+
+Suite de [RSPL](https://github.com/GonoyaPedrus/RSPL), projet de fin d'études, réécrit proprement.
+
+## Démarrage
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,ml]"
+fpl ingest      # 2020-21 → 2025-26 via vaastav, saison en cours via l'API (~3 min)
+fpl baseline    # évalue la baseline « forme récente » sur un split temporel
+fpl train       # entraîne LightGBM et le compare à la baseline
+pytest
+```
+
+## Données
+
+Saisons terminées issues de [vaastav/Fantasy-Premier-League](https://github.com/vaastav/Fantasy-Premier-League) ; saison en cours (matchs joués, joueurs, prix, calendrier, ton équipe) via l'API officielle `fantasy.premierleague.com/api` (`fpl_assistant.api`). Les données ne sont pas versionnées : `data/` est ignoré par git.
+
+## Modèle
+
+LightGBM sur des features connues avant la deadline : forme sur 3 et 5 journées (points, minutes, BPS, ICT, buts, passes), prix, poste, nombre de matchs dans la journée, domicile, et force récente de l'équipe et de l'adversaire (buts marqués et encaissés sur 6 journées). Toutes les moyennes sont décalées d'une journée.
+
+| Test | Modèle | RMSE | MAE | RMSE (ont joué) | Top 20 / journée |
+|---|---|---|---|---|---|
+| 2025-26, J20 → J38 | forme 5 J | 2,07 | 1,02 | 3,20 | 3,77 pts |
+| | LightGBM | **1,90** | **0,95** | **2,97** | **4,48 pts** |
+| 2024-25, J1 → J38 | forme 5 J | 2,13 | 1,06 | 3,13 | 4,19 pts |
+| | LightGBM | **1,96** | **1,01** | **2,86** | **4,73 pts** |
+
+« Top 20 » : points réels moyens des 20 joueurs les mieux classés par le modèle, journée par journée. C'est la métrique la plus proche d'une décision FPL.
+
+## Feuille de route
+
+1. ~~Ingestion + baseline forme récente évaluée sur split temporel~~
+2. ~~Modèle LightGBM qui bat la baseline~~ ; à enrichir : minutes attendues, xG/xA, statut médical
+3. Optimiseur PuLP branché sur les prédictions de la prochaine journée
+4. Transferts : partir de mon équipe actuelle, coût des transferts (-4), horizon de plusieurs journées
+5. Routine hebdomadaire avant la deadline, puis une interface

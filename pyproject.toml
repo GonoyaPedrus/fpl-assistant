@@ -1,0 +1,33 @@
+[project]
+name = "fpl-assistant"
+version = "0.1.0"
+description = "Prédiction des points Fantasy Premier League et optimisation d'équipe sous contraintes."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.2",
+    "pyarrow>=15",
+    "pulp>=2.8,<3",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+ml = ["lightgbm>=4.3", "scikit-learn>=1.4"]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+fpl = "fpl_assistant.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
