@@ -3,7 +3,7 @@ import itertools
 import pandas as pd
 import pytest
 
-from fpl_assistant.optimize import MAX_PER_TEAM, SQUAD_SIZE, pick_squad
+from fpl_assistant.optimize import MAX_PER_TEAM, SQUAD_SIZE, lineup, pick_squad
 
 
 def make_players() -> pd.DataFrame:
@@ -54,3 +54,69 @@ def test_duplicate_index_labels_are_handled():
     players = make_players()
     players.index = [i // 2 for i in range(len(players))]
     assert len(pick_squad(players).squad) == 15
+
+
+def test_no_pointless_transfer_from_an_optimal_squad():
+    players = make_players()
+    current = pick_squad(players).squad.index
+    result = pick_squad(players, current=current, free_transfers=1)
+    assert result.transfers == 0 and result.hit_points == 0
+    assert set(result.squad.index) == set(current)
+
+
+def test_transfers_pay_hits_beyond_free_transfers():
+    players = make_players()
+    current = pick_squad(players).squad.index
+    star = players[~players.index.isin(current) & (players["position"] == "MID")]["price"].idxmin()
+    players.loc[star, "xp"] = 50.0
+
+    free = pick_squad(players, current=current, free_transfers=5)
+    assert star in free.squad.index and free.hit_points == 0
+
+    paid = pick_squad(players, current=current, free_transfers=0)
+    assert star in paid.squad.index and paid.hit_points == 4 * paid.transfers
+
+    assert pick_squad(players, current=current, free_transfers=0, hit_cost=1000).transfers == 0
+    held = pick_squad(players, current=current, max_transfers=0)
+    assert set(held.squad.index) == set(current)
+
+
+def test_rejects_current_players_missing_from_candidates():
+    players = make_players()
+    with pytest.raises(ValueError, match="absents"):
+        pick_squad(players, current=[*players.index[:14], 999])
+
+
+def test_keeps_four_players_from_one_club_but_never_adds_one():
+    players = make_players()
+    current = pick_squad(players).squad.index
+    # Un joueur de l'effectif rejoint un club qui en compte déjà trois.
+    club = players.loc[current, "team"].value_counts().idxmax()
+    mover = players.loc[current][players.loc[current, "team"] != club].index[0]
+    players.loc[mover, "team"] = club
+    assert (players.loc[current, "team"] == club).sum() == MAX_PER_TEAM + 1
+
+    held = pick_squad(players, current=current, max_transfers=0)
+    assert set(held.squad.index) == set(current)
+    moved = pick_squad(players, current=current, free_transfers=5)
+    assert (moved.squad["team"] == club).sum() <= MAX_PER_TEAM + 1
+
+
+def test_bench_points_are_reported():
+    result = pick_squad(make_players())
+    bench = result.squad.loc[~result.squad.index.isin(result.xi.index), "xp"].sum()
+    assert result.bench_points == pytest.approx(bench)
+
+
+def test_lineup_follows_fpl_order():
+    result = pick_squad(make_players())
+    table = lineup(result)
+    assert table["slot"].tolist() == list(range(1, 16))
+    xi, bench = table[~table["bench"]], table[table["bench"]]
+    assert len(xi) == 11 and xi["position"].iloc[0] == "GK"
+    assert xi["position"].map(list(SQUAD_SIZE).index).is_monotonic_increasing
+    assert bench["position"].iloc[0] == "GK"  # Le gardien remplaçant en 12.
+    assert bench["xp"].iloc[1:].is_monotonic_decreasing
+    assert table["is_captain"].sum() == table["is_vice_captain"].sum() == 1
+    vice = table[table["is_vice_captain"]].iloc[0]
+    assert not vice["bench"] and vice["xp"] == xi[~xi["is_captain"]]["xp"].max()

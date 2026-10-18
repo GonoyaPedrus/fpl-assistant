@@ -1,12 +1,16 @@
 import numpy as np
 import pandas as pd
 import pytest
+from fakes import LeagueClient, league
 
+from fpl_assistant import recommend
 from fpl_assistant.api import players_table
+from fpl_assistant.optimize import BENCH_WEIGHT, pick_squad
 from fpl_assistant.recommend import (
     availability,
     candidate_pool,
     check_fresh,
+    plan_transfers,
     predict_next,
     upcoming_matches,
 )
@@ -59,6 +63,8 @@ def test_candidate_pool_keeps_blank_players_and_drops_unavailable():
     pool = candidate_pool(BOOTSTRAP, preds)
     assert sorted(pool.index) == [1, 3, 4]  # P2 blessé retiré, P4 (club au repos) gardé.
     assert pool.loc[4, "xp"] == 0.0 and pool.loc[4, "n_fixtures"] == 0
+    # Dans l'effectif actuel, le blessé reste candidat : on peut le garder sur le banc.
+    assert 2 in candidate_pool(BOOTSTRAP, preds, keep=[2]).index
 
 
 def test_check_fresh_rejects_stale_history():
@@ -107,3 +113,36 @@ def test_predict_next_scores_every_playing_player():
     assert preds["n_fixtures"].tolist() == [2, 2, 2]
     # Les matchs à venir reçoivent bien la force des équipes, calculée sur J1 à J4.
     assert preds[["team_att", "team_def", "opp_att", "opp_def"]].notna().all().all()
+
+
+def test_plan_transfers_uses_selling_prices_and_compares_with_holding(monkeypatch):
+    bootstrap, preds = league()
+    # L'effectif actuel est le meilleur d'il y a une journée ; depuis, les xp ont changé.
+    squad = list(pick_squad(candidate_pool(bootstrap, preds)).squad.index)
+    preds["xp"] = preds["xp"].to_numpy()[::-1]
+    monkeypatch.setattr(recommend, "_next_predictions", lambda *_: (2, preds))
+
+    now = {e["id"]: e["now_cost"] / 10 for e in bootstrap["elements"]}
+    # Chaque joueur a pris 0,5 M£ depuis la J1.
+    matches = pd.DataFrame(
+        {
+            "season": "2026-27",
+            "GW": 1,
+            "element": list(now),
+            "price": [p - 0.5 for p in now.values()],
+        }
+    )
+    plan = plan_transfers(matches, 1, client=LeagueClient(bootstrap, squad))
+    # Revente : achat à now - 0,5, puis la moitié de la hausse (0,2) : now - 0,3.
+    assert plan.pool.loc[squad, "price"].to_numpy() == pytest.approx([now[e] - 0.3 for e in squad])
+    assert plan.team.budget == pytest.approx(0.5 + sum(now[e] - 0.3 for e in squad))
+    assert set(plan.hold.squad.index) == set(squad)
+    assert plan.best.cost <= plan.team.budget + 1e-6
+    assert len(plan.sold) == len(plan.bought) == plan.best.transfers > 0
+    assert plan.best.hit_points == 4 * max(plan.best.transfers - 1, 0)
+
+    # Le choix compte le banc à 10 % : c'est ce score qui ne peut que s'améliorer.
+    def score(s):
+        return s.expected_points + BENCH_WEIGHT * s.bench_points - s.hit_points
+
+    assert score(plan.best) >= score(plan.hold) - 1e-6

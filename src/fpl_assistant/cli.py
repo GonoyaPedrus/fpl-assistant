@@ -1,4 +1,5 @@
-"""Ligne de commande : `fpl ingest`, `pull`, `latest`, `baseline`, `train`, `recommend`."""
+"""Ligne de commande : `fpl ingest`, `pull`, `latest`, `baseline`, `train`, `recommend`,
+`transfers`, `login`, `whoami`, `autopilot`."""
 
 from __future__ import annotations
 
@@ -12,13 +13,16 @@ import requests
 
 from fpl_assistant import (
     DEFAULT_DATA,
-    POSITIONS,
     api,
+    auth,
+    autopilot,
     evaluate,
     features,
     ingest,
     model,
     recommend,
+    report,
+    transfers,
 )
 
 
@@ -38,32 +42,37 @@ def _report(label: str, test: pd.DataFrame, pred: pd.Series) -> None:
     )
 
 
-def _print_squad(gw: int, squad) -> None:
-    order = {pos: i for i, pos in enumerate(POSITIONS)}
-    table = squad.squad.assign(
-        bench=~squad.squad.index.isin(squad.xi.index),
-        _order=squad.squad["position"].map(order),
-    )
-    # Titulaires par poste ; banc dans l'ordre des remplacements FPL : gardien d'abord,
-    # puis les joueurs de champ du plus au moins prometteur.
-    table["_rank"] = table["_order"].where(~table["bench"], (table["position"] != "GK") * 1)
-    table = table.sort_values(["bench", "_rank", "xp"], ascending=[True, True, False])
-    print(f"Équipe recommandée pour la J{gw} ({squad.cost:.1f} M£)")
-    for element, row in table.iterrows():
-        cap = " (C)" if element == squad.captain else ""
-        notes = []
-        if row["status"] != "a":
-            notes.append(f"{row['status']}, {row['chance_of_playing']:.0f} %")
-        if row["n_fixtures"] != 1:
-            notes.append(
-                "ne joue pas" if row["n_fixtures"] == 0 else f"{row['n_fixtures']:.0f} matchs"
-            )
-        flag = f"  [{'; '.join(notes)}]" if notes else ""
-        print(
-            f"  {'banc' if row['bench'] else 'XI':4} {row['position']:3} {row['name'] + cap:24}"
-            f" {row['team']:15} {row['price']:5.1f} M£  {row['xp']:4.1f} pts{flag}"
+def _login(print_token: bool) -> None:
+    """Instructions sur stderr : avec `print_token`, seule la sortie standard porte le jeton,
+    pour `gh secret set FPL_REFRESH_TOKEN --body "$(fpl login --print)"`."""
+
+    def say(text: str = "") -> None:
+        print(text, file=sys.stderr)
+
+    login = auth.start_login()
+    say("1. Ouvre cette adresse et connecte-toi à ton compte FPL :\n")
+    say(f"   {login.url}\n")
+    say("2. Tu arrives sur fantasy.premierleague.com. Copie tout de suite l'adresse complète de")
+    say("   la page : elle contient « code= » et ne vaut qu'une minute. Si elle a déjà changé,")
+    say("   reprends-la dans l'historique du navigateur.\n")
+    say("Adresse : ")
+    tokens = auth.finish_login(login, input())
+    # Un premier rafraîchissement dit si le serveur change le jeton à chaque usage.
+    renewed = auth.refresh(tokens["refresh_token"])
+    token = renewed.get("refresh_token", tokens["refresh_token"])
+    entry = api.FPLClient(access_token=renewed["access_token"]).me()["player"]["entry"]
+    say(f"\nConnecté : équipe {entry}.")
+    if print_token:
+        print(token)
+        say("Jeton affiché pour le secret GitHub, rien n'est gardé sur cette machine.")
+    else:
+        auth.save_refresh_token(token)
+        say(f"Jeton enregistré dans {auth.TOKEN_FILE}.")
+    if token != tokens["refresh_token"]:
+        say(
+            "Attention : la FPL change le jeton à chaque usage. Ça marche sur cette machine, "
+            "mais la GitHub Action ne peut pas garder le nouveau : signale-le avant de t'y fier."
         )
-    print(f"Points attendus (XI + capitaine) : {squad.expected_points:.1f}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -83,6 +92,47 @@ def main(argv: list[str] | None = None) -> None:
     p_rec = sub.add_parser("recommend", help="Équipe recommandée pour la prochaine journée")
     p_rec.add_argument("--data", type=Path, default=DEFAULT_DATA)
     p_rec.add_argument("--budget", type=float, default=100.0, help="En M£ (défaut 100)")
+    p_tr = sub.add_parser("transfers", help="Transferts conseillés depuis ton équipe FPL")
+    p_tr.add_argument("--entry", type=int, required=True, help="ID d'équipe FPL (dans son URL)")
+    p_tr.add_argument("--data", type=Path, default=DEFAULT_DATA)
+    p_tr.add_argument(
+        "--free-transfers",
+        type=int,
+        choices=range(transfers.MAX_FREE_TRANSFERS + 1),
+        metavar=f"0-{transfers.MAX_FREE_TRANSFERS}",
+        help="Corrige l'estimation des transferts gratuits",
+    )
+    p_tr.add_argument(
+        "--max-transfers",
+        type=int,
+        choices=range(16),
+        metavar="0-15",
+        help="Nombre maximum de transferts",
+    )
+
+    p_login = sub.add_parser("login", help="Connecte le dépôt à ton compte FPL (une fois)")
+    p_login.add_argument(
+        "--print",
+        action="store_true",
+        help="Affiche le jeton (pour le secret GitHub) au lieu de l'enregistrer ici",
+    )
+    sub.add_parser("whoami", help="Vérifie la connexion au compte et affiche l'ID d'équipe")
+    p_auto = sub.add_parser(
+        "autopilot", help="Règle ton équipe pour la prochaine journée (connexion requise)"
+    )
+    p_auto.add_argument("--entry", type=int, help="ID d'équipe FPL (défaut : celle du compte)")
+    p_auto.add_argument("--data", type=Path, default=DEFAULT_DATA)
+    p_auto.add_argument("--apply", action="store_true", help="Envoie vraiment à la FPL")
+    p_auto.add_argument(
+        "--max-hits",
+        type=int,
+        choices=range(16),
+        metavar="0-15",
+        default=autopilot.MAX_HITS,
+        help=f"Transferts payants (-4) au plus (défaut {autopilot.MAX_HITS})",
+    )
+    p_auto.add_argument("--report", type=Path, help="Écrit le compte rendu en Markdown")
+    p_auto.add_argument("--gw", type=int, help="N'envoie rien si ce n'est plus la prochaine")
 
     for name, help_ in [
         ("baseline", "Évalue la baseline forme récente"),
@@ -110,18 +160,59 @@ def main(argv: list[str] | None = None) -> None:
             print(exc, file=sys.stderr)
         return
 
-    if args.cmd == "recommend":
+    if args.cmd == "login":
         try:
-            next_gw, squad = recommend.recommend(pd.read_parquet(args.data), budget=args.budget)
+            _login(args.print)
+        except (RuntimeError, requests.RequestException) as exc:
+            parser.exit(1, f"{exc}\n")
+        return
+
+    if args.cmd == "whoami":
+        try:
+            print(api.FPLClient(access_token=auth.access_token()).me()["player"]["entry"])
+        except (RuntimeError, requests.RequestException) as exc:
+            parser.exit(1, f"{exc}\n")
+        return
+
+    if args.cmd in ("recommend", "transfers", "autopilot"):
+        try:
+            history = pd.read_parquet(args.data)
+            if args.cmd == "recommend":
+                next_gw, squad = recommend.recommend(history, budget=args.budget)
+            elif args.cmd == "transfers":
+                plan = recommend.plan_transfers(
+                    history,
+                    args.entry,
+                    free_transfers=args.free_transfers,
+                    max_transfers=args.max_transfers,
+                )
+            else:
+                client = api.FPLClient(access_token=auth.access_token())
+                entry = args.entry or client.me()["player"]["entry"]
+                result = autopilot.run(
+                    history, entry, client, apply=args.apply, max_hits=args.max_hits, gw=args.gw
+                )
         except FileNotFoundError:
             parser.exit(1, f"Pas de données dans {args.data} : lance `fpl pull`.\n")
         except ModuleNotFoundError as exc:
             parser.exit(1, f"{exc} : installe l'extra ML (pip install -e '.[ml]').\n")
+        except requests.HTTPError as exc:
+            parser.exit(1, f"Refus de l'API FPL : {exc}\n")
         except requests.RequestException as exc:
             parser.exit(1, f"API FPL injoignable : {exc}\n")
-        except ValueError as exc:
+        except (ValueError, RuntimeError) as exc:
             parser.exit(1, f"{exc}\n")
-        _print_squad(next_gw, squad)
+        if args.cmd == "recommend":
+            print("\n".join(report.squad_lines(f"Équipe recommandée pour la J{next_gw}", squad)))
+        elif args.cmd == "transfers":
+            lines = report.transfer_lines(
+                plan, estimated_free=args.free_transfers is None, estimated_prices=True
+            )
+            print("\n".join(lines))
+        else:
+            print(result.markdown())
+            if args.report:
+                args.report.write_text(result.markdown())
         return
 
     gw = _prepare(args.data)

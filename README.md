@@ -14,6 +14,8 @@ fpl ingest      # ou tout retélécharger : vaastav + saison en cours via l'API 
 fpl baseline    # évalue la baseline « forme récente » sur un split temporel
 fpl train       # entraîne LightGBM et le compare à la baseline
 fpl recommend   # équipe de 15 recommandée pour la prochaine journée (--budget 100)
+fpl transfers --entry 1234567   # transferts conseillés depuis ton équipe FPL
+fpl login && fpl autopilot      # règle ton équipe (simulation sans --apply)
 pytest
 ```
 
@@ -44,10 +46,43 @@ LightGBM sur des features connues avant la deadline : forme sur 3 et 5 journées
 
 À lancer après la validation de la journée en cours (`fpl pull` récupère les données publiées le matin), sinon la forme ignore la dernière journée.
 
+## Transferts
+
+`fpl transfers --entry <ID>` part de ton équipe (l'ID est dans l'URL de la page « Points » sur le site FPL) et cherche les transferts qui maximisent les points attendus de la prochaine journée, pénalité de -4 par transfert payant déduite. Il affiche les départs et arrivées, les points attendus avec et sans transfert, puis l'effectif et le capitaine.
+
+Tout vient de l'API publique, sans connexion, avec trois limites :
+
+- l'effectif est celui de la dernière deadline passée : les transferts déjà faits pour la prochaine journée n'y sont pas ;
+- les transferts gratuits sont estimés depuis l'historique de l'équipe (un par journée, jusqu'à cinq, gardés pendant un wildcard ou un free hit) : `--free-transfers N` corrige l'estimation, `--max-transfers N` plafonne le nombre de transferts ;
+- les prix de revente suivent la règle FPL (la moitié de la plus-value), mais le prix d'achat d'un joueur pris à la création de l'équipe est celui de la journée de départ, pas celui du jour exact.
+
+L'horizon est d'une seule journée : un transfert gratuit sera utilisé dès qu'il rapporte un peu, même si le garder pour la semaine suivante vaudrait mieux. Le gain affiché aide à trancher.
+
+## Pilote automatique
+
+`fpl autopilot` règle ton équipe pour la prochaine journée : transferts, XI, capitaine et vice-capitaine, envoyés à la FPL avec `--apply` (sans, il simule). Connecté à ton compte, il lit ton équipe exacte : transferts gratuits, prix de revente, transferts déjà faits. Il prend au plus un -4 par journée (`--max-hits` pour changer) et ne joue jamais de chip.
+
+Mise en route, une fois, sur ta machine :
+
+```bash
+fpl login          # ouvre l'adresse affichée, connecte-toi, recolle l'adresse d'arrivée
+fpl pull && fpl autopilot                                 # simulation, pour vérifier
+gh secret set FPL_REFRESH_TOKEN --body "$(fpl login --print)"  # 2e connexion, pour l'Action
+gh variable set FPL_ENTRY --body 1234567                  # ton ID, affiché par fpl login
+```
+
+L'Action a son propre jeton (`fpl login --print` ne garde rien sur ta machine) : ainsi les usages locaux et ceux de l'Action ne se gênent pas.
+
+La GitHub Action [Pilote automatique](.github/workflows/autopilot.yml) tourne ensuite toutes les 30 minutes. Dans les 3 heures avant chaque deadline, elle règle l'équipe une fois et publie le compte rendu dans une issue `autopilot`, ce qui t'envoie une notification. Si quelque chose échoue, elle ouvre une issue d'alerte et réessaie jusqu'à 15 minutes avant la deadline. Chaque matin, elle vérifie aussi que la connexion tient (`fpl whoami`), pour qu'un jeton expiré se voie avant la deadline. Un chip activé à la main sur le site est conservé ; le pilote n'en joue jamais lui-même.
+
+L'Action ne réécrit jamais ses secrets. Si la FPL remplace le jeton à chaque usage (`fpl login` le signale), l'Action échoue et ouvre une alerte : il faudra alors une autre solution.
+
+Règlement : l'article 28 (d) des [conditions FPL](https://fantasy.premierleague.com/en/help/terms) interdit d'accéder au jeu par des systèmes automatisés, et l'article 36 prévoit suspension ou disqualification en cas de manquement.
+
 ## Feuille de route
 
 1. ~~Ingestion + baseline forme récente évaluée sur split temporel~~
 2. ~~Modèle LightGBM qui bat la baseline~~ ; à enrichir : minutes attendues, xG/xA, statut médical
 3. ~~Optimiseur PuLP branché sur les prédictions de la prochaine journée~~ (`fpl recommend`)
-4. Transferts : partir de mon équipe actuelle, coût des transferts (-4), horizon de plusieurs journées
-5. Recommandation hebdomadaire avant la deadline (l'ingestion après chaque journée est en place), puis une interface
+4. ~~Transferts depuis mon équipe actuelle, avec le coût des transferts (-4)~~ (`fpl transfers`) ; à faire : horizon de plusieurs journées
+5. ~~Pilote automatique avant chaque deadline~~ (`fpl autopilot`) ; à faire : chips, puis une interface

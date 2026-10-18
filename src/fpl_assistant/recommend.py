@@ -1,12 +1,14 @@
-"""Équipe recommandée pour la prochaine journée : prédictions LightGBM puis optimiseur."""
+"""Équipe et transferts pour la prochaine journée : prédictions LightGBM puis optimiseur."""
 
 from __future__ import annotations
 
+from collections.abc import Collection
+from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
 
-from fpl_assistant import api, features, model
+from fpl_assistant import POSITIONS, api, features, model, transfers
 from fpl_assistant.optimize import Squad, pick_squad
 
 
@@ -76,25 +78,26 @@ def check_fresh(history: pd.DataFrame, bootstrap: dict[str, Any]) -> None:
         )
 
 
-def candidate_pool(bootstrap: dict[str, Any], preds: pd.DataFrame) -> pd.DataFrame:
+def candidate_pool(
+    bootstrap: dict[str, Any], preds: pd.DataFrame, keep: Collection[int] = ()
+) -> pd.DataFrame:
     """Tous les joueurs disponibles, indexés par `element`, avec leur `xp`.
 
     Un joueur dont le club ne joue pas reste candidat à 0 point (utile au banc) ; un joueur
-    indisponible (blessé, suspendu, parti) est retiré pour ne jamais être choisi.
+    indisponible (blessé, suspendu, parti) est retiré pour ne jamais être choisi, sauf s'il
+    est dans `keep` (l'effectif actuel) : on peut le garder sur le banc plutôt que payer -4.
     """
     players = api.players_table(bootstrap)
-    players = players[availability(players) > 0]
+    players = players[(availability(players) > 0) | players["element"].isin(list(keep))]
     cols = ["element", "raw_xp", "xp", "n_fixtures"]
     pool = players.merge(preds[cols], on="element", how="left")
     pool[["raw_xp", "xp", "n_fixtures"]] = pool[["raw_xp", "xp", "n_fixtures"]].fillna(0)
     return pool.set_index("element")
 
 
-def recommend(
-    history: pd.DataFrame, client: api.FPLClient | None = None, budget: float = 100.0
-) -> tuple[int, Squad]:
-    client = client or api.FPLClient()
-    bootstrap = client.bootstrap()
+def _next_predictions(
+    history: pd.DataFrame, client: api.FPLClient, bootstrap: dict[str, Any]
+) -> tuple[int, pd.DataFrame]:
     gw = api.next_gameweek(bootstrap)
     if gw is None:
         raise ValueError("Pas de prochaine journée dans le calendrier FPL")
@@ -102,5 +105,87 @@ def recommend(
     upcoming = upcoming_matches(bootstrap, client.fixtures(), gw)
     if upcoming.empty:
         raise ValueError(f"Aucun match prévu en J{gw}")
-    preds = predict_next(history, upcoming)
+    return gw, predict_next(history, upcoming)
+
+
+def recommend(
+    history: pd.DataFrame, client: api.FPLClient | None = None, budget: float = 100.0
+) -> tuple[int, Squad]:
+    client = client or api.FPLClient()
+    bootstrap = client.bootstrap()
+    gw, preds = _next_predictions(history, client, bootstrap)
     return gw, pick_squad(candidate_pool(bootstrap, preds), budget=budget)
+
+
+@dataclass
+class TransferPlan:
+    gw: int
+    team: transfers.Team
+    pool: pd.DataFrame  # Candidats, prix de revente pour l'effectif actuel.
+    best: Squad  # Avec les transferts conseillés.
+    hold: Squad  # Meilleur XI sans aucun transfert, pour comparer.
+
+    @property
+    def sold(self) -> list[int]:
+        return [e for e in self.team.elements if e not in self.best.squad.index]
+
+    @property
+    def bought(self) -> list[int]:
+        return [e for e in self.best.squad.index if e not in self.team.elements]
+
+    def pairs(self) -> list[tuple[int, int]]:
+        """(sortant, entrant) : autant de départs que d'arrivées par poste, appariés poste par
+        poste et du plus au moins prometteur."""
+        order = {pos: i for i, pos in enumerate(POSITIONS)}
+
+        def ranked(elements: list[int]) -> list[int]:
+            rows = self.pool.loc[elements]
+            rows = rows.assign(_order=rows["position"].map(order))
+            return list(rows.sort_values(["_order", "xp"], ascending=[True, False]).index)
+
+        return list(zip(ranked(self.sold), ranked(self.bought), strict=True))
+
+
+def plan_transfers(
+    history: pd.DataFrame,
+    entry: int,
+    client: api.FPLClient | None = None,
+    free_transfers: int | None = None,
+    max_transfers: int | None = None,
+    logged_in: bool = False,
+    max_hits: int | None = None,
+) -> TransferPlan:
+    """Transferts conseillés pour la prochaine journée, depuis l'équipe FPL `entry`.
+
+    `logged_in` : `client` est connecté au compte, l'équipe est lue exactement dans
+    `my-team` ; sinon elle est reconstituée depuis l'API publique, transferts gratuits et
+    prix de revente estimés. `free_transfers` remplace ce nombre. `max_hits` plafonne les
+    transferts payants (-4 chacun).
+    """
+    client = client or api.FPLClient()
+    bootstrap = client.bootstrap()
+    check_fresh(history, bootstrap)  # Avant les appels API de l'équipe et l'entraînement.
+    if logged_in:
+        team = transfers.team_from_my_team(client.my_team(entry), bootstrap)
+    else:
+        team = transfers.current_team(client, entry, bootstrap, history)
+    if free_transfers is not None:
+        team.free_transfers = free_transfers
+    if max_hits is not None and team.free_transfers < transfers.UNLIMITED:
+        # Les -4 déjà pris pour cette journée (un passage précédent) comptent dans le plafond.
+        cap = team.free_transfers + max(max_hits - team.paid_transfers, 0)
+        max_transfers = cap if max_transfers is None else min(max_transfers, cap)
+    gw, preds = _next_predictions(history, client, bootstrap)
+    pool = candidate_pool(bootstrap, preds, keep=team.elements)
+    # Un joueur gardé « coûte » son prix de revente, celui qui compte dans le budget.
+    pool["price"] = pd.Series(team.selling).reindex(pool.index).fillna(pool["price"])
+    best = pick_squad(
+        pool,
+        budget=team.budget,
+        current=team.elements,
+        free_transfers=team.free_transfers,
+        max_transfers=max_transfers,
+    )
+    # Sans transfert, seuls le XI et le capitaine restent à choisir parmi les 15.
+    hold = pick_squad(pool.loc[team.elements], budget=team.budget, current=team.elements)
+    return TransferPlan(gw, team, pool, best, hold)

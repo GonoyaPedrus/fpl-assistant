@@ -1,0 +1,175 @@
+name: Pilote automatique
+
+# Toutes les 30 minutes, regarde la prochaine deadline FPL. Dans les 3 heures qui la
+# précèdent, règle l'équipe (transferts, XI, capitaine, vice) une fois par journée et le
+# signale dans une issue. Chaque matin, vérifie aussi que la connexion au compte tient.
+# Il faut la variable FPL_ENTRY et le secret FPL_REFRESH_TOKEN (`fpl login --print`, cf.
+# README) ; sans FPL_ENTRY, rien ne tourne. Le secret n'est jamais réécrit ici : si la FPL
+# remplace le jeton à chaque usage, le passage échoue et ouvre une alerte.
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Régler l'équipe maintenant, même loin de la deadline"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write # Compte rendu et alertes.
+
+# Un seul passage à la fois : deux rafraîchissements simultanés du jeton se gêneraient.
+concurrency:
+  group: autopilot
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # Avec pipefail : une requête qui échoue dans un pipe fait échouer l'étape.
+
+env:
+  GH_REPO: ${{ github.repository }}
+  FPL_TOKEN_FILE: ${{ github.workspace }}/../fpl-token.json
+
+jobs:
+  keepalive:
+    if: vars.FPL_ENTRY != '' && github.event.schedule == '17 8 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - name: Connexion au compte
+        env:
+          FPL_REFRESH_TOKEN: ${{ secrets.FPL_REFRESH_TOKEN }}
+        run: fpl whoami
+      - name: Jeton inchangé
+        if: always()
+        run: .github/scripts/token-unchanged.sh
+      - name: Alerte
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          .github/scripts/alert.sh "Pilote automatique : connexion au compte FPL perdue" \
+            "La vérification du matin a échoué : $RUN_URL
+
+          Relance \`gh secret set FPL_REFRESH_TOKEN --body \"\$(fpl login --print)\"\` avant la
+          prochaine deadline, sinon l'équipe ne sera pas réglée."
+
+  autopilot:
+    if: vars.FPL_ENTRY != '' && github.event.schedule != '17 8 * * *'
+    runs-on: ubuntu-latest
+    # Bien moins que les 3 heures de la fenêtre : un passage bloqué laisse sa chance au suivant.
+    timeout-minutes: 30
+    steps:
+      - name: Fenêtre avant la deadline
+        id: window
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          bootstrap="$(curl -fsS --retry 3 --retry-all-errors -A fpl-assistant \
+            https://fantasy.premierleague.com/api/bootstrap-static/)"
+          next="$(jq -c '[.events[] | select(.is_next)][0] // empty' <<<"$bootstrap")"
+          if [ -z "$next" ]; then
+            echo "::notice::Pas de prochaine journée dans le calendrier FPL."
+            exit 0
+          fi
+          # La saison (« 2026-27 ») distingue la J1 d'une saison de celle de la suivante.
+          year="$(jq -r '.events[0].deadline_time[:4]' <<<"$bootstrap")"
+          season="$year-$(printf %02d $(( (year + 1) % 100 )))"
+          gw="$(jq -r .id <<<"$next")"
+          left=$(( ($(date -d "$(jq -r .deadline_time <<<"$next")" +%s) - $(date +%s)) / 60 ))
+          title="$season J$gw : équipe réglée par le pilote automatique"
+          # Liste par label plutôt que par recherche : l'index de recherche a du retard.
+          done="$(gh issue list --label autopilot --state all --limit 200 --json title \
+            | jq --arg t "$title" '[.[] | select(.title == $t)] | length')"
+          echo "$season J$gw : deadline dans $left min, déjà réglée : $done"
+          if [ "$FORCE" = "true" ]; then
+            title="$season J$gw : réglage manuel" # Laisse la place au passage avant la deadline.
+          elif [ "$done" != "0" ] || [ "$left" -gt 180 ] || [ "$left" -lt 15 ]; then
+            exit 0
+          fi
+          {
+            echo "run=true"
+            echo "gw=$gw"
+            echo "season=$season"
+            echo "title=$title"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.window.outputs.run == 'true'
+      - uses: actions/setup-python@v5
+        if: steps.window.outputs.run == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+      - if: steps.window.outputs.run == 'true'
+        run: pip install -e ".[ml]"
+
+      - name: Données à jour
+        if: steps.window.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fpl pull --out data/gw.parquet
+          published="$(gh release download data-latest -p latest.txt -O - 2>/dev/null || true)"
+          # La publication du matin peut manquer une journée validée dans la journée.
+          if [ "$(fpl latest)" != "$published" ]; then
+            fpl ingest --strict --out data/gw.parquet
+          fi
+
+      - name: Régler l'équipe
+        id: apply
+        if: steps.window.outputs.run == 'true'
+        env:
+          FPL_REFRESH_TOKEN: ${{ secrets.FPL_REFRESH_TOKEN }}
+          FPL_ENTRY: ${{ vars.FPL_ENTRY }}
+          GW: ${{ steps.window.outputs.gw }}
+        run: fpl autopilot --entry "$FPL_ENTRY" --gw "$GW" --apply --report report.md
+
+      # Juste après l'envoi : ce compte rendu marque la journée comme faite.
+      - name: Compte rendu
+        if: steps.apply.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ steps.window.outputs.title }}
+        run: |
+          gh label create autopilot --color 1D76DB --description "Pilote automatique FPL" --force
+          url="$(gh issue create --title "$TITLE" --label autopilot --body-file report.md)"
+          gh issue close "$url" # Un journal : la notification suffit.
+
+      - name: Jeton inchangé
+        if: always() && steps.window.outputs.run == 'true'
+        run: .github/scripts/token-unchanged.sh
+
+      - name: Alerte en cas d'échec
+        if: failure() && steps.window.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEASON: ${{ steps.window.outputs.season }}
+          GW: ${{ steps.window.outputs.gw }}
+          APPLIED: ${{ steps.apply.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$APPLIED" = "success" ]; then
+            state="L'équipe a bien été réglée, mais la suite a échoué (jeton ou compte rendu)."
+          else
+            state="L'équipe n'a pas été réglée. Le pilote réessaie toutes les 30 minutes jusqu'à
+          15 minutes avant la deadline."
+          fi
+          .github/scripts/alert.sh "$SEASON J$GW : échec du pilote automatique" "$state
+
+          Détails : $RUN_URL
+
+          Si l'erreur parle de connexion ou de jeton, relance
+          \`gh secret set FPL_REFRESH_TOKEN --body \"\$(fpl login --print)\"\`."
