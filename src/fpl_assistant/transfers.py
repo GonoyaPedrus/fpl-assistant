@@ -9,8 +9,10 @@ import pandas as pd
 import requests
 
 from fpl_assistant import api
+from fpl_assistant.optimize import SQUAD_SIZE
 
 MAX_FREE_TRANSFERS = 5
+UNLIMITED = sum(SQUAD_SIZE.values())  # Avant la première deadline ou sous wildcard.
 # Ces chips ne consomment pas les transferts gratuits mis de côté (règle FPL depuis 2024-25).
 CHIPS_KEEPING_TRANSFERS = {"wildcard", "freehit"}
 
@@ -22,7 +24,8 @@ class Team:
     elements: list[int]
     bank: float  # En M£.
     selling: dict[int, float]  # Prix de revente estimé de chaque joueur, en M£.
-    free_transfers: int  # Estimés pour la journée suivante.
+    free_transfers: int  # Pour la prochaine journée : estimés, ou exacts si connecté.
+    paid_transfers: int = 0  # Déjà faits avec -4 pour la prochaine journée (connecté).
 
     @property
     def budget(self) -> float:
@@ -128,4 +131,25 @@ def current_team(
         bank=picks["entry_history"]["bank"] / 10,
         selling={e: selling_price(bought[e], now[e]) for e in elements},
         free_transfers=free_transfers(record, started, gw),
+    )
+
+
+def team_from_my_team(my_team: dict[str, Any], bootstrap: dict[str, Any]) -> Team:
+    """Équipe exacte lue dans `my-team/{id}/` (connecté) : prix de revente et transferts
+    gratuits donnés par la FPL, transferts déjà faits pour la prochaine journée compris."""
+    info = my_team["transfers"]
+    made = info.get("made", 0)
+    if info.get("status") == "unlimited" or info.get("limit") is None:
+        free, paid = UNLIMITED, 0
+    else:
+        free, paid = max(info["limit"] - made, 0), max(made - info["limit"], 0)
+    gw = api.current_gameweek(bootstrap) or 0
+    return Team(
+        gw=gw,
+        squad_gw=api.next_gameweek(bootstrap) or gw,
+        elements=[p["element"] for p in my_team["picks"]],
+        bank=info["bank"] / 10,
+        selling={p["element"]: p["selling_price"] / 10 for p in my_team["picks"]},
+        free_transfers=free,
+        paid_transfers=paid,
     )

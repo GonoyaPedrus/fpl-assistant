@@ -1,0 +1,125 @@
+name: Pilote automatique
+
+# Toutes les 30 minutes, regarde la prochaine deadline FPL. Dans les 3 heures qui la
+# précèdent, règle l'équipe (transferts, XI, capitaine, vice) une fois par journée et le
+# signale dans une issue. Il faut la variable FPL_ENTRY et le secret FPL_REFRESH_TOKEN
+# (`fpl login`, cf. README) ; sans FPL_ENTRY, rien ne tourne.
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Régler l'équipe maintenant, même loin de la deadline"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write # Compte rendu et alertes.
+
+concurrency:
+  group: autopilot
+  cancel-in-progress: false
+
+jobs:
+  autopilot:
+    if: vars.FPL_ENTRY != ''
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Fenêtre avant la deadline
+        id: window
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          next="$(curl -fsS -A fpl-assistant https://fantasy.premierleague.com/api/bootstrap-static/ \
+            | jq -c '[.events[] | select(.is_next)][0] // empty | {id, deadline_time}')"
+          if [ -z "$next" ]; then
+            echo "::notice::Pas de prochaine journée dans le calendrier FPL."
+            exit 0
+          fi
+          gw="$(jq -r .id <<<"$next")"
+          left=$(( ($(date -d "$(jq -r .deadline_time <<<"$next")" +%s) - $(date +%s)) / 60 ))
+          title="J$gw : équipe réglée par le pilote automatique"
+          done="$(gh issue list --label autopilot --state all --search "J$gw in:title" \
+            --json title | jq --arg t "$title" '[.[] | select(.title == $t)] | length')"
+          echo "J$gw : deadline dans $left min, déjà réglée : $done"
+          if [ "$done" = "0" ] && { [ "$FORCE" = "true" ] || { [ "$left" -le 180 ] && [ "$left" -ge 15 ]; }; }; then
+            {
+              echo "run=true"
+              echo "gw=$gw"
+              echo "title=$title"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.window.outputs.run == 'true'
+      - uses: actions/setup-python@v5
+        if: steps.window.outputs.run == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+      - if: steps.window.outputs.run == 'true'
+        run: pip install -e ".[ml]"
+
+      - name: Données à jour
+        if: steps.window.outputs.run == 'true'
+        run: |
+          fpl pull --out data/gw.parquet
+          published="$(gh release download data-latest -p latest.txt -O - 2>/dev/null || true)"
+          # La publication du matin peut manquer une journée validée dans la journée.
+          if [ "$(fpl latest)" != "$published" ]; then
+            fpl ingest --strict --out data/gw.parquet
+          fi
+
+      - name: Régler l'équipe
+        if: steps.window.outputs.run == 'true'
+        env:
+          FPL_REFRESH_TOKEN: ${{ secrets.FPL_REFRESH_TOKEN }}
+          FPL_TOKEN_FILE: ${{ runner.temp }}/token.json
+          FPL_ENTRY: ${{ vars.FPL_ENTRY }}
+        run: fpl autopilot --entry "$FPL_ENTRY" --apply --report report.md
+
+      - name: Garder le jeton renouvelé
+        if: always() && steps.window.outputs.run == 'true'
+        env:
+          FPL_TOKEN_FILE: ${{ runner.temp }}/token.json
+          SECRETS_PAT: ${{ secrets.SECRETS_PAT }}
+        run: |
+          # `fpl` n'écrit ce fichier que si la FPL a remplacé le jeton : l'ancien ne vaut plus.
+          [ -f "$FPL_TOKEN_FILE" ] || exit 0
+          token="$(jq -r .refresh_token "$FPL_TOKEN_FILE")"
+          echo "::add-mask::$token"
+          if [ -z "$SECRETS_PAT" ]; then
+            echo "::error::La FPL a renouvelé le jeton mais SECRETS_PAT manque : relance fpl login."
+            exit 1
+          fi
+          GH_TOKEN="$SECRETS_PAT" gh secret set FPL_REFRESH_TOKEN --body "$token"
+
+      - name: Compte rendu
+        if: steps.window.outputs.run == 'true'
+        env:
+          TITLE: ${{ steps.window.outputs.title }}
+        run: |
+          gh label create autopilot --color 1D76DB --description "Pilote automatique FPL" --force
+          url="$(gh issue create --title "$TITLE" --label autopilot --body-file report.md)"
+          gh issue close "$url" # Un journal : la notification suffit.
+
+      - name: Alerte en cas d'échec
+        if: failure() && steps.window.outputs.run == 'true'
+        env:
+          GW: ${{ steps.window.outputs.gw }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="J$GW : échec du pilote automatique"
+          open="$(gh issue list --state open --search "J$GW in:title" --json title \
+            | jq --arg t "$title" '[.[] | select(.title == $t)] | length')"
+          [ "$open" = "0" ] || exit 0 # Une alerte par journée, les essais suivants continuent.
+          gh issue create --title "$title" --body "L'équipe n'a pas été réglée. Détails : $RUN_URL
+
+          Si l'erreur parle de connexion ou de jeton, relance \`fpl login\` puis
+          \`gh secret set FPL_REFRESH_TOKEN --body \"\$(fpl token)\"\`. Le pilote réessaie
+          toutes les 30 minutes jusqu'à 15 minutes avant la deadline."

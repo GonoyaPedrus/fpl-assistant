@@ -3,7 +3,7 @@ import itertools
 import pandas as pd
 import pytest
 
-from fpl_assistant.optimize import MAX_PER_TEAM, SQUAD_SIZE, pick_squad
+from fpl_assistant.optimize import MAX_PER_TEAM, SQUAD_SIZE, lineup, pick_squad
 
 
 def make_players() -> pd.DataFrame:
@@ -106,3 +106,17 @@ def test_bench_points_are_reported():
     result = pick_squad(make_players())
     bench = result.squad.loc[~result.squad.index.isin(result.xi.index), "xp"].sum()
     assert result.bench_points == pytest.approx(bench)
+
+
+def test_lineup_follows_fpl_order():
+    result = pick_squad(make_players())
+    table = lineup(result)
+    assert table["slot"].tolist() == list(range(1, 16))
+    xi, bench = table[~table["bench"]], table[table["bench"]]
+    assert len(xi) == 11 and xi["position"].iloc[0] == "GK"
+    assert xi["position"].map(list(SQUAD_SIZE).index).is_monotonic_increasing
+    assert bench["position"].iloc[0] == "GK"  # Le gardien remplaçant en 12.
+    assert bench["xp"].iloc[1:].is_monotonic_decreasing
+    assert table["is_captain"].sum() == table["is_vice_captain"].sum() == 1
+    vice = table[table["is_vice_captain"]].iloc[0]
+    assert not vice["bench"] and vice["xp"] == xi[~xi["is_captain"]]["xp"].max()

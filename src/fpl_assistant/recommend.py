@@ -8,7 +8,7 @@ from typing import Any
 
 import pandas as pd
 
-from fpl_assistant import api, features, model, transfers
+from fpl_assistant import POSITIONS, api, features, model, transfers
 from fpl_assistant.optimize import Squad, pick_squad
 
 
@@ -133,6 +133,18 @@ class TransferPlan:
     def bought(self) -> list[int]:
         return [e for e in self.best.squad.index if e not in self.team.elements]
 
+    def pairs(self) -> list[tuple[int, int]]:
+        """(sortant, entrant) : autant de départs que d'arrivées par poste, appariés poste par
+        poste et du plus au moins prometteur."""
+        order = {pos: i for i, pos in enumerate(POSITIONS)}
+
+        def ranked(elements: list[int]) -> list[int]:
+            rows = self.pool.loc[elements]
+            rows = rows.assign(_order=rows["position"].map(order))
+            return list(rows.sort_values(["_order", "xp"], ascending=[True, False]).index)
+
+        return list(zip(ranked(self.sold), ranked(self.bought), strict=True))
+
 
 def plan_transfers(
     history: pd.DataFrame,
@@ -140,17 +152,29 @@ def plan_transfers(
     client: api.FPLClient | None = None,
     free_transfers: int | None = None,
     max_transfers: int | None = None,
+    logged_in: bool = False,
+    max_hits: int | None = None,
 ) -> TransferPlan:
     """Transferts conseillés pour la prochaine journée, depuis l'équipe FPL `entry`.
 
-    `free_transfers` remplace l'estimation tirée de l'historique de l'équipe.
+    `logged_in` : `client` est connecté au compte, l'équipe est lue exactement dans
+    `my-team` ; sinon elle est reconstituée depuis l'API publique, transferts gratuits et
+    prix de revente estimés. `free_transfers` remplace ce nombre. `max_hits` plafonne les
+    transferts payants (-4 chacun).
     """
     client = client or api.FPLClient()
     bootstrap = client.bootstrap()
     check_fresh(history, bootstrap)  # Avant les appels API de l'équipe et l'entraînement.
-    team = transfers.current_team(client, entry, bootstrap, history)
+    if logged_in:
+        team = transfers.team_from_my_team(client.my_team(entry), bootstrap)
+    else:
+        team = transfers.current_team(client, entry, bootstrap, history)
     if free_transfers is not None:
         team.free_transfers = free_transfers
+    if max_hits is not None and team.free_transfers < transfers.UNLIMITED:
+        # Les -4 déjà pris pour cette journée (un passage précédent) comptent dans le plafond.
+        cap = team.free_transfers + max(max_hits - team.paid_transfers, 0)
+        max_transfers = cap if max_transfers is None else min(max_transfers, cap)
     gw, preds = _next_predictions(history, client, bootstrap)
     pool = candidate_pool(bootstrap, preds, keep=team.elements)
     # Un joueur gardé « coûte » son prix de revente, celui qui compte dans le budget.

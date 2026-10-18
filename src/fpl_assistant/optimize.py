@@ -121,3 +121,25 @@ def pick_squad(
         transfers=n_bought,
         hit_points=hit_cost * max(n_bought - free_transfers, 0) if current is not None else 0.0,
     )
+
+
+def lineup(squad: Squad) -> pd.DataFrame:
+    """Effectif dans l'ordre FPL, avec `slot` (1 à 15), `bench`, `is_captain`, `is_vice_captain`.
+
+    Le XI par poste, puis le banc dans l'ordre des remplacements : le gardien en 12, puis les
+    joueurs de champ du plus au moins prometteur. Le vice-capitaine est le meilleur xp du XI
+    après le capitaine.
+    """
+    order = {pos: i for i, pos in enumerate(POSITIONS)}
+    table = squad.squad.assign(
+        bench=~squad.squad.index.isin(squad.xi.index),
+        _order=squad.squad["position"].map(order),
+    )
+    table["_rank"] = table["_order"].where(~table["bench"], (table["position"] != "GK") * 1)
+    table = table.sort_values(["bench", "_rank", "xp"], ascending=[True, True, False])
+    vice = squad.xi[squad.xi.index != squad.captain]["xp"].idxmax()
+    return table.drop(columns=["_order", "_rank"]).assign(
+        slot=range(1, len(table) + 1),
+        is_captain=table.index == squad.captain,
+        is_vice_captain=table.index == vice,
+    )

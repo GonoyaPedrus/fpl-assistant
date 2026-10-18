@@ -2,7 +2,13 @@ import pandas as pd
 import pytest
 import requests
 
-from fpl_assistant.transfers import current_team, free_transfers, selling_price
+from fpl_assistant.transfers import (
+    UNLIMITED,
+    current_team,
+    free_transfers,
+    selling_price,
+    team_from_my_team,
+)
 
 
 def history(transfers, chips=()):
@@ -87,3 +93,18 @@ def test_team_not_started_yet_or_unknown():
         current_team(FakeClient(started=4), 1, BOOTSTRAP, MATCHES)
     with pytest.raises(ValueError, match="introuvable"):
         current_team(FakeClient(), 404, BOOTSTRAP, MATCHES)
+
+
+def test_team_from_my_team_reads_exact_values():
+    picks = [{"element": e, "selling_price": 60 + e} for e in (1, 2, 3)]
+    normal = {"picks": picks, "transfers": {"status": "cost", "limit": 2, "made": 1, "bank": 7}}
+    team = team_from_my_team(normal, BOOTSTRAP)
+    assert team.elements == [1, 2, 3] and team.bank == pytest.approx(0.7)
+    assert team.selling == pytest.approx({1: 6.1, 2: 6.2, 3: 6.3})
+    assert (team.free_transfers, team.paid_transfers) == (1, 0)
+    assert team.squad_gw == 4  # La prochaine journée : `my-team` inclut ses transferts.
+
+    hit = {**normal, "transfers": {"status": "cost", "limit": 1, "made": 2, "bank": 7}}
+    assert team_from_my_team(hit, BOOTSTRAP).paid_transfers == 1
+    start = {**normal, "transfers": {"status": "unlimited", "limit": None, "made": 0, "bank": 7}}
+    assert team_from_my_team(start, BOOTSTRAP).free_transfers == UNLIMITED

@@ -10,12 +10,20 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-BASE_URL = "https://fantasy.premierleague.com/api"
+SITE_URL = "https://fantasy.premierleague.com"
+BASE_URL = f"{SITE_URL}/api"
 POSITIONS = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
 
 class FPLClient:
-    def __init__(self, session: requests.Session | None = None, pause: float = 0.2) -> None:
+    """Lecture publique ; avec `access_token` (cf. `auth`), lecture et écriture sur ton équipe."""
+
+    def __init__(
+        self,
+        session: requests.Session | None = None,
+        pause: float = 0.2,
+        access_token: str | None = None,
+    ) -> None:
         if session is None:
             session = requests.Session()
             # L'API renvoie des 429/503 autour des deadlines : on réessaie avec un délai.
@@ -23,6 +31,9 @@ class FPLClient:
             session.mount("https://", HTTPAdapter(max_retries=retry))
         self.session = session
         self.session.headers["User-Agent"] = "fpl-assistant"
+        if access_token:
+            # L'en-tête qu'utilise le site, distinct d'`Authorization`.
+            self.session.headers["X-API-Authorization"] = f"Bearer {access_token}"
         self.pause = pause  # Politesse : l'API limite les rafales de requêtes.
 
     def _get(self, path: str) -> Any:
@@ -30,6 +41,24 @@ class FPLClient:
         resp.raise_for_status()
         time.sleep(self.pause)
         return resp.json()
+
+    def _post(self, path: str, payload: dict[str, Any]) -> Any:
+        # L'API est une application Django : protection CSRF comme pour le site lui-même.
+        if "csrftoken" not in self.session.cookies:
+            self.session.get(f"{BASE_URL}/me/", timeout=30)
+        headers = {
+            "X-CSRFToken": self.session.cookies.get("csrftoken", ""),
+            "Origin": SITE_URL,
+            "Referer": f"{SITE_URL}/",
+        }
+        resp = self.session.post(f"{BASE_URL}/{path}", json=payload, headers=headers, timeout=30)
+        if resp.status_code >= 400:
+            # Les refus de l'API (budget, règle du jeu…) sont détaillés dans le corps.
+            raise requests.HTTPError(
+                f"{resp.status_code} sur {path} : {resp.text[:500]}", response=resp
+            )
+        time.sleep(self.pause)
+        return resp.json() if resp.content else None
 
     def bootstrap(self) -> dict[str, Any]:
         return self._get("bootstrap-static/")
@@ -52,6 +81,25 @@ class FPLClient:
     def entry_picks(self, entry: int, gw: int) -> dict[str, Any]:
         """Effectif à la deadline de `gw` : visible seulement une fois cette deadline passée."""
         return self._get(f"entry/{entry}/event/{gw}/picks/")
+
+    # Connecté seulement.
+    def me(self) -> dict[str, Any]:
+        return self._get("me/")
+
+    def my_team(self, entry: int) -> dict[str, Any]:
+        """Effectif actuel avec prix de revente, transferts gratuits et chips disponibles."""
+        return self._get(f"my-team/{entry}/")
+
+    def make_transfers(
+        self, entry: int, gw: int, transfers: list[dict[str, Any]], chip: str | None = None
+    ) -> Any:
+        """`transfers` : element_in, element_out, purchase_price, selling_price (dixièmes)."""
+        payload = {"chip": chip, "entry": entry, "event": gw, "transfers": transfers}
+        return self._post("transfers/", payload)
+
+    def set_lineup(self, entry: int, picks: list[dict[str, Any]], chip: str | None = None) -> Any:
+        """`picks` : element, position (1 à 15), is_captain, is_vice_captain."""
+        return self._post(f"my-team/{entry}/", {"chip": chip, "picks": picks})
 
 
 def team_names(bootstrap: dict[str, Any]) -> dict[int, str]:

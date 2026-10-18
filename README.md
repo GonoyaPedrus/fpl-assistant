@@ -15,6 +15,7 @@ fpl baseline    # évalue la baseline « forme récente » sur un split temporel
 fpl train       # entraîne LightGBM et le compare à la baseline
 fpl recommend   # équipe de 15 recommandée pour la prochaine journée (--budget 100)
 fpl transfers --entry 1234567   # transferts conseillés depuis ton équipe FPL
+fpl login && fpl autopilot      # règle ton équipe (simulation sans --apply)
 pytest
 ```
 
@@ -57,10 +58,27 @@ Tout vient de l'API publique, sans connexion, avec trois limites :
 
 L'horizon est d'une seule journée : un transfert gratuit sera utilisé dès qu'il rapporte un peu, même si le garder pour la semaine suivante vaudrait mieux. Le gain affiché aide à trancher.
 
+## Pilote automatique
+
+`fpl autopilot` règle ton équipe pour la prochaine journée : transferts, XI, capitaine et vice-capitaine, envoyés à la FPL avec `--apply` (sans, il simule). Connecté à ton compte, il lit ton équipe exacte : transferts gratuits, prix de revente, transferts déjà faits. Il prend au plus un -4 par journée (`--max-hits` pour changer) et ne joue jamais de chip.
+
+Mise en route, une fois, sur ta machine :
+
+```bash
+fpl login          # ouvre l'adresse affichée, connecte-toi, recolle l'adresse d'arrivée
+fpl pull && fpl autopilot                                # simulation, pour vérifier
+gh secret set FPL_REFRESH_TOKEN --body "$(fpl token)"
+gh variable set FPL_ENTRY --body 1234567                 # ton ID, affiché par fpl login
+```
+
+La GitHub Action [Pilote automatique](.github/workflows/autopilot.yml) tourne ensuite toutes les 30 minutes. Dans les 3 heures avant chaque deadline, elle règle l'équipe une fois et publie le compte rendu dans une issue `autopilot`, ce qui t'envoie une notification. Si quelque chose échoue, elle ouvre une issue d'alerte et réessaie jusqu'à 15 minutes avant la deadline. Si `fpl login` indique que la FPL change le jeton à chaque usage, ajoute le secret `SECRETS_PAT` : un jeton GitHub à grain fin avec le droit « Secrets : read and write » sur ce dépôt, pour que l'Action garde le nouveau jeton.
+
+Règlement : l'article 28 (d) des [conditions FPL](https://fantasy.premierleague.com/en/help/terms) interdit d'accéder au jeu par des systèmes automatisés, et l'article 36 prévoit suspension ou disqualification en cas de manquement.
+
 ## Feuille de route
 
 1. ~~Ingestion + baseline forme récente évaluée sur split temporel~~
 2. ~~Modèle LightGBM qui bat la baseline~~ ; à enrichir : minutes attendues, xG/xA, statut médical
 3. ~~Optimiseur PuLP branché sur les prédictions de la prochaine journée~~ (`fpl recommend`)
 4. ~~Transferts depuis mon équipe actuelle, avec le coût des transferts (-4)~~ (`fpl transfers`) ; à faire : horizon de plusieurs journées
-5. Recommandation hebdomadaire avant la deadline (l'ingestion après chaque journée est en place), puis une interface
+5. ~~Pilote automatique avant chaque deadline~~ (`fpl autopilot`) ; à faire : chips, puis une interface
