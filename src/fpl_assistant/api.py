@@ -51,7 +51,14 @@ class FPLClient:
             "Origin": SITE_URL,
             "Referer": f"{SITE_URL}/",
         }
-        resp = self.session.post(f"{BASE_URL}/{path}", json=payload, headers=headers, timeout=30)
+        for attempt in range(3):
+            resp = self.session.post(
+                f"{BASE_URL}/{path}", json=payload, headers=headers, timeout=30
+            )
+            # Surcharge autour des deadlines : la requête n'a pas été traitée, on réessaie.
+            if resp.status_code not in (429, 502, 503, 504) or attempt == 2:
+                break
+            time.sleep(5 * 2**attempt)
         if resp.status_code >= 400:
             # Les refus de l'API (budget, règle du jeu…) sont détaillés dans le corps.
             raise requests.HTTPError(

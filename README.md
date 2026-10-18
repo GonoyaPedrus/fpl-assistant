@@ -66,12 +66,16 @@ Mise en route, une fois, sur ta machine :
 
 ```bash
 fpl login          # ouvre l'adresse affichée, connecte-toi, recolle l'adresse d'arrivée
-fpl pull && fpl autopilot                                # simulation, pour vérifier
-gh secret set FPL_REFRESH_TOKEN --body "$(fpl token)"
-gh variable set FPL_ENTRY --body 1234567                 # ton ID, affiché par fpl login
+fpl pull && fpl autopilot                                 # simulation, pour vérifier
+gh secret set FPL_REFRESH_TOKEN --body "$(fpl login --print)"  # 2e connexion, pour l'Action
+gh variable set FPL_ENTRY --body 1234567                  # ton ID, affiché par fpl login
 ```
 
-La GitHub Action [Pilote automatique](.github/workflows/autopilot.yml) tourne ensuite toutes les 30 minutes. Dans les 3 heures avant chaque deadline, elle règle l'équipe une fois et publie le compte rendu dans une issue `autopilot`, ce qui t'envoie une notification. Si quelque chose échoue, elle ouvre une issue d'alerte et réessaie jusqu'à 15 minutes avant la deadline. Si `fpl login` indique que la FPL change le jeton à chaque usage, ajoute le secret `SECRETS_PAT` : un jeton GitHub à grain fin avec le droit « Secrets : read and write » sur ce dépôt, pour que l'Action garde le nouveau jeton.
+L'Action a son propre jeton (`fpl login --print` ne garde rien sur ta machine) : ainsi les usages locaux et ceux de l'Action ne se gênent pas.
+
+La GitHub Action [Pilote automatique](.github/workflows/autopilot.yml) tourne ensuite toutes les 30 minutes. Dans les 3 heures avant chaque deadline, elle règle l'équipe une fois et publie le compte rendu dans une issue `autopilot`, ce qui t'envoie une notification. Si quelque chose échoue, elle ouvre une issue d'alerte et réessaie jusqu'à 15 minutes avant la deadline. Chaque matin, elle vérifie aussi que la connexion tient (`fpl whoami`), pour qu'un jeton expiré se voie avant la deadline. Un chip activé à la main sur le site est conservé ; le pilote n'en joue jamais lui-même.
+
+L'Action ne réécrit jamais ses secrets. Si la FPL remplace le jeton à chaque usage (`fpl login` le signale), l'Action échoue et ouvre une alerte : il faudra alors une autre solution.
 
 Règlement : l'article 28 (d) des [conditions FPL](https://fantasy.premierleague.com/en/help/terms) interdit d'accéder au jeu par des systèmes automatisés, et l'article 36 prévoit suspension ou disqualification en cas de manquement.
 

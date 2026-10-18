@@ -1,5 +1,5 @@
 """Ligne de commande : `fpl ingest`, `pull`, `latest`, `baseline`, `train`, `recommend`,
-`transfers`, `login`, `token`, `autopilot`."""
+`transfers`, `login`, `whoami`, `autopilot`."""
 
 from __future__ import annotations
 
@@ -42,28 +42,36 @@ def _report(label: str, test: pd.DataFrame, pred: pd.Series) -> None:
     )
 
 
-def _login() -> None:
+def _login(print_token: bool) -> None:
+    """Instructions sur stderr : avec `print_token`, seule la sortie standard porte le jeton,
+    pour `gh secret set FPL_REFRESH_TOKEN --body "$(fpl login --print)"`."""
+
+    def say(text: str = "") -> None:
+        print(text, file=sys.stderr)
+
     login = auth.start_login()
-    print("1. Ouvre cette adresse et connecte-toi à ton compte FPL :\n")
-    print(f"   {login.url}\n")
-    print("2. Tu arrives sur fantasy.premierleague.com. Copie tout de suite l'adresse complète")
-    print("   de la page (elle contient « code= », valable une minute) et colle-la ici.\n")
-    tokens = auth.finish_login(login, input("Adresse : "))
+    say("1. Ouvre cette adresse et connecte-toi à ton compte FPL :\n")
+    say(f"   {login.url}\n")
+    say("2. Tu arrives sur fantasy.premierleague.com. Copie tout de suite l'adresse complète de")
+    say("   la page : elle contient « code= » et ne vaut qu'une minute. Si elle a déjà changé,")
+    say("   reprends-la dans l'historique du navigateur.\n")
+    say("Adresse : ")
+    tokens = auth.finish_login(login, input())
     # Un premier rafraîchissement dit si le serveur change le jeton à chaque usage.
     renewed = auth.refresh(tokens["refresh_token"])
     token = renewed.get("refresh_token", tokens["refresh_token"])
-    auth.save_refresh_token(token)
-    rotates = token != tokens["refresh_token"]
     entry = api.FPLClient(access_token=renewed["access_token"]).me()["player"]["entry"]
-    print(f"\nConnecté : équipe {entry}. Jeton enregistré dans {auth.TOKEN_FILE}.")
-    print("Pour la GitHub Action :")
-    print('  gh secret set FPL_REFRESH_TOKEN --body "$(fpl token)"')
-    print(f"  gh variable set FPL_ENTRY --body {entry}")
-    if rotates:
-        print(
-            "Le jeton change à chaque usage : ajoute aussi un jeton GitHub (secret "
-            "SECRETS_PAT, droit « Secrets : read and write » sur le dépôt) pour que l'Action "
-            "enregistre le nouveau après chaque passage."
+    say(f"\nConnecté : équipe {entry}.")
+    if print_token:
+        print(token)
+        say("Jeton affiché pour le secret GitHub, rien n'est gardé sur cette machine.")
+    else:
+        auth.save_refresh_token(token)
+        say(f"Jeton enregistré dans {auth.TOKEN_FILE}.")
+    if token != tokens["refresh_token"]:
+        say(
+            "Attention : la FPL change le jeton à chaque usage. Ça marche sur cette machine, "
+            "mais la GitHub Action ne peut pas garder le nouveau : signale-le avant de t'y fier."
         )
 
 
@@ -102,8 +110,13 @@ def main(argv: list[str] | None = None) -> None:
         help="Nombre maximum de transferts",
     )
 
-    sub.add_parser("login", help="Connecte le dépôt à ton compte FPL (une fois)")
-    sub.add_parser("token", help="Affiche le jeton de connexion, pour le secret GitHub")
+    p_login = sub.add_parser("login", help="Connecte le dépôt à ton compte FPL (une fois)")
+    p_login.add_argument(
+        "--print",
+        action="store_true",
+        help="Affiche le jeton (pour le secret GitHub) au lieu de l'enregistrer ici",
+    )
+    sub.add_parser("whoami", help="Vérifie la connexion au compte et affiche l'ID d'équipe")
     p_auto = sub.add_parser(
         "autopilot", help="Règle ton équipe pour la prochaine journée (connexion requise)"
     )
@@ -119,6 +132,7 @@ def main(argv: list[str] | None = None) -> None:
         help=f"Transferts payants (-4) au plus (défaut {autopilot.MAX_HITS})",
     )
     p_auto.add_argument("--report", type=Path, help="Écrit le compte rendu en Markdown")
+    p_auto.add_argument("--gw", type=int, help="N'envoie rien si ce n'est plus la prochaine")
 
     for name, help_ in [
         ("baseline", "Évalue la baseline forme récente"),
@@ -147,12 +161,16 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.cmd == "login":
-        _login()
-        return
-    if args.cmd == "token":
         try:
-            print(auth.load_refresh_token())
-        except RuntimeError as exc:
+            _login(args.print)
+        except (RuntimeError, requests.RequestException) as exc:
+            parser.exit(1, f"{exc}\n")
+        return
+
+    if args.cmd == "whoami":
+        try:
+            print(api.FPLClient(access_token=auth.access_token()).me()["player"]["entry"])
+        except (RuntimeError, requests.RequestException) as exc:
             parser.exit(1, f"{exc}\n")
         return
 
@@ -172,7 +190,7 @@ def main(argv: list[str] | None = None) -> None:
                 client = api.FPLClient(access_token=auth.access_token())
                 entry = args.entry or client.me()["player"]["entry"]
                 result = autopilot.run(
-                    history, entry, client, apply=args.apply, max_hits=args.max_hits
+                    history, entry, client, apply=args.apply, max_hits=args.max_hits, gw=args.gw
                 )
         except FileNotFoundError:
             parser.exit(1, f"Pas de données dans {args.data} : lance `fpl pull`.\n")

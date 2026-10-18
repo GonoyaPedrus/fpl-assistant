@@ -35,6 +35,7 @@ class LeagueClient:
         self.selling = {e["id"]: e["now_cost"] - 3 for e in bootstrap["elements"]}
         self.transfer_info = transfer_info or {"status": "cost", "limit": 1, "made": 0, "bank": 5}
         self.sent = []
+        self.chips = []
 
     def bootstrap(self):
         return self._bootstrap
@@ -56,10 +57,11 @@ class LeagueClient:
         return {
             "picks": [{"element": e, "selling_price": self.selling.get(e, 0)} for e in self.squad],
             "transfers": self.transfer_info,
+            "chips": self.chips,
         }
 
     def make_transfers(self, entry, gw, transfers, chip=None):
-        self.sent.append(("transfers", gw, transfers))
+        self.sent.append(("transfers", gw, transfers, chip))
 
     def set_lineup(self, entry, picks, chip=None):
-        self.sent.append(("lineup", picks))
+        self.sent.append(("lineup", picks, chip))

@@ -77,3 +77,12 @@ def test_client_sends_the_token_and_csrf_headers():
     method, url, body, headers = session.calls[-1]
     assert url.endswith("/api/my-team/42/") and body["picks"][0]["element"] == 1
     assert headers["X-CSRFToken"] == "tok" and headers["Origin"].startswith("https://fantasy")
+
+
+def test_saved_token_is_private(tmp_path):
+    path = tmp_path / "dir" / "token.json"
+    auth.save_refresh_token("t1", path)
+    auth.save_refresh_token("t2", path)
+    assert auth.load_refresh_token(path) == "t2"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert list(path.parent.iterdir()) == [path]  # Pas de fichier temporaire laissé.

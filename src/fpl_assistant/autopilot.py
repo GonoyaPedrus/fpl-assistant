@@ -1,6 +1,7 @@
 """Pilote automatique : règle l'équipe FPL avant la deadline (transferts, XI, capitaine).
 
-Les chips (wildcard, free hit, triple capitaine, bench boost) ne sont jamais joués ici.
+Les chips (wildcard, free hit, triple capitaine, bench boost) ne sont jamais joués ici ; un
+chip activé à la main est renvoyé tel quel, car un envoi sans chip l'annulerait.
 """
 
 from __future__ import annotations
@@ -27,10 +28,13 @@ class Run:
 
     def markdown(self) -> str:
         done = "envoyés à la FPL" if self.applied else "simulation, rien n'a été envoyé"
+        chip = self.plan.team.active_chip
+        kept = f" Chip activé à la main, conservé : {chip}." if chip else ""
         lines = report.transfer_lines(self.plan, estimated_free=False, estimated_prices=False)
         body = "\n".join(lines)
         return (
-            f"Transferts, XI et capitaine pour la J{self.plan.gw} : {done}.\n\n```\n{body}\n```\n"
+            f"Transferts, XI et capitaine pour la J{self.plan.gw} : {done}.{kept}\n\n"
+            f"```\n{body}\n```\n"
         )
 
 
@@ -65,16 +69,21 @@ def run(
     client: api.FPLClient,
     apply: bool = False,
     max_hits: int = MAX_HITS,
+    gw: int | None = None,
 ) -> Run:
     """Calcule l'équipe de la prochaine journée et, si `apply`, l'envoie à la FPL.
 
-    `client` doit être connecté au compte (cf. `auth.access_token`).
+    `client` doit être connecté au compte (cf. `auth.access_token`). `gw` : la journée
+    visée ; si sa deadline passe pendant le calcul, rien n'est envoyé pour la suivante.
     """
     plan = recommend.plan_transfers(history, entry, client, max_hits=max_hits, logged_in=True)
+    if gw is not None and plan.gw != gw:
+        raise ValueError(f"La deadline de la J{gw} est passée : rien n'a été envoyé.")
     result = Run(plan, transfers_payload(plan), picks_payload(plan))
     if apply:
+        chip = plan.team.active_chip
         if result.transfers:
-            client.make_transfers(entry, plan.gw, result.transfers)
-        client.set_lineup(entry, result.picks)
+            client.make_transfers(entry, plan.gw, result.transfers, chip=chip)
+        client.set_lineup(entry, result.picks, chip=chip)
         result.applied = True
     return result

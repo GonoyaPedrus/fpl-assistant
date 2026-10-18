@@ -26,6 +26,7 @@ class Team:
     selling: dict[int, float]  # Prix de revente estimé de chaque joueur, en M£.
     free_transfers: int  # Pour la prochaine journée : estimés, ou exacts si connecté.
     paid_transfers: int = 0  # Déjà faits avec -4 pour la prochaine journée (connecté).
+    active_chip: str | None = None  # Chip activé à la main pour la prochaine journée.
 
     @property
     def budget(self) -> float:
@@ -152,4 +153,8 @@ def team_from_my_team(my_team: dict[str, Any], bootstrap: dict[str, Any]) -> Tea
         selling={p["element"]: p["selling_price"] / 10 for p in my_team["picks"]},
         free_transfers=free,
         paid_transfers=paid,
+        active_chip=next(
+            (c["name"] for c in my_team.get("chips", []) if c.get("status_for_entry") == "active"),
+            None,
+        ),
     )

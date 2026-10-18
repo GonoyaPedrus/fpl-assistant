@@ -12,6 +12,8 @@ import hashlib
 import json
 import os
 import secrets
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -50,12 +52,22 @@ def start_login() -> Login:
     return Login(f"{AUTHORITY}/authorize?{urlencode(query)}", verifier, state)
 
 
-def _token(data: dict[str, str]) -> dict:
-    resp = requests.post(f"{AUTHORITY}/token", data={"client_id": CLIENT_ID, **data}, timeout=30)
+def _token(data: dict[str, str], attempts: int = 3) -> dict:
+    for attempt in range(attempts):
+        resp = requests.post(
+            f"{AUTHORITY}/token", data={"client_id": CLIENT_ID, **data}, timeout=30
+        )
+        # Une erreur serveur n'a rien changé côté FPL : on peut réessayer sans risque.
+        if resp.status_code not in (429, 500, 502, 503, 504) or attempt == attempts - 1:
+            break
+        time.sleep(5 * 2**attempt)
     if resp.status_code >= 400:
         # Le corps OAuth (`error`, `error_description`) explique mieux qu'un code HTTP.
         raise RuntimeError(f"Connexion FPL refusée ({resp.status_code}) : {resp.text[:300]}")
-    return resp.json()
+    tokens = resp.json()
+    if "refresh_token" not in tokens and data["grant_type"] == "authorization_code":
+        raise RuntimeError("La FPL n'a pas donné de jeton durable (offline_access refusé).")
+    return tokens
 
 
 def finish_login(login: Login, redirected_url: str) -> dict:
@@ -81,9 +93,13 @@ def refresh(refresh_token: str) -> dict:
 
 
 def save_refresh_token(token: str, path: Path = TOKEN_FILE) -> None:
+    """Écriture atomique, lisible par toi seul : après une rotation, l'ancien jeton ne vaut
+    plus rien, un fichier tronqué obligerait à se reconnecter."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(mode=0o600, exist_ok=True)  # Lisible par toi seul.
-    path.write_text(json.dumps({"refresh_token": token}))
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".token-")  # Créé en 0600.
+    with os.fdopen(fd, "w") as f:
+        json.dump({"refresh_token": token}, f)
+    os.replace(tmp, path)
 
 
 def load_refresh_token(path: Path = TOKEN_FILE) -> str:

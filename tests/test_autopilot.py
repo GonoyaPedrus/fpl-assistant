@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 from fakes import LeagueClient, league
 
 from fpl_assistant import autopilot, recommend
@@ -27,7 +28,8 @@ def test_apply_sends_transfers_then_lineup(monkeypatch):
     bootstrap, client = setup(monkeypatch)
     result = autopilot.run(MATCHES, 1, client, apply=True)
     assert result.applied and [call[0] for call in client.sent] == ["transfers", "lineup"]
-    _, gw, transfers = client.sent[0]
+    _, gw, transfers, chip = client.sent[0]
+    assert chip is None
     assert gw == 2 and 0 < len(transfers) <= 2  # 1 gratuit + 1 payant au plus.
     elements = {e["id"]: e for e in bootstrap["elements"]}
     for t in transfers:
@@ -49,3 +51,21 @@ def test_hits_already_taken_count_against_the_cap(monkeypatch):
     info = {"status": "cost", "limit": 1, "made": 2, "bank": 5}
     _, client = setup(monkeypatch, info)
     assert autopilot.run(MATCHES, 1, client, apply=True).transfers == []
+
+
+def test_chip_activated_by_hand_is_sent_back(monkeypatch):
+    _, client = setup(monkeypatch)
+    client.chips = [
+        {"name": "wildcard", "status_for_entry": "available"},
+        {"name": "bboost", "status_for_entry": "active"},
+    ]
+    result = autopilot.run(MATCHES, 1, client, apply=True)
+    assert {call[-1] for call in client.sent} == {"bboost"}  # Un envoi sans chip l'annulerait.
+    assert "bboost" in result.markdown()
+
+
+def test_nothing_is_sent_once_the_deadline_has_passed(monkeypatch):
+    _, client = setup(monkeypatch)  # La prochaine journée est la J2.
+    with pytest.raises(ValueError, match="J1 est passée"):
+        autopilot.run(MATCHES, 1, client, apply=True, gw=1)
+    assert client.sent == []
