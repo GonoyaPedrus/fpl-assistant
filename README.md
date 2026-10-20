@@ -66,16 +66,17 @@ Mise en route, une fois, sur ta machine :
 
 ```bash
 fpl login          # ouvre l'adresse affichée, connecte-toi, recolle l'adresse d'arrivée
-fpl pull && fpl autopilot                                 # simulation, pour vérifier
-gh secret set FPL_REFRESH_TOKEN --body "$(fpl login --print)"  # 2e connexion, pour l'Action
-gh variable set FPL_ENTRY --body 1234567                  # ton ID, affiché par fpl login
+fpl pull && fpl autopilot  # simulation, pour vérifier
+fpl login --print  # 2e connexion, pour l'Action : affiche son jeton sans le garder ici
 ```
 
-L'Action a son propre jeton (`fpl login --print` ne garde rien sur ta machine) : ainsi les usages locaux et ceux de l'Action ne se gênent pas.
+Dans le dépôt, Settings > Secrets and variables > Actions, colle ce jeton dans le secret `FPL_REFRESH_TOKEN` et ton ID d'équipe (affiché par `fpl login`) dans la variable `FPL_ENTRY`. Le jeton donne la main sur ton compte : ne le colle nulle part ailleurs. Avec la CLI GitHub, `gh secret set FPL_REFRESH_TOKEN --body "$(fpl login --print)"` évite même de l'afficher.
+
+L'Action a son propre jeton : ainsi les usages locaux et ceux de l'Action ne se gênent pas.
 
 La GitHub Action [Pilote automatique](.github/workflows/autopilot.yml) tourne ensuite toutes les 30 minutes. Dans les 3 heures avant chaque deadline, elle règle l'équipe une fois et publie le compte rendu dans une issue `autopilot`, ce qui t'envoie une notification. Si quelque chose échoue, elle ouvre une issue d'alerte et réessaie jusqu'à 15 minutes avant la deadline. Chaque matin, elle vérifie aussi que la connexion tient (`fpl whoami`), pour qu'un jeton expiré se voie avant la deadline. Un chip activé à la main sur le site est conservé ; le pilote n'en joue jamais lui-même.
 
-L'Action ne réécrit jamais ses secrets. Si la FPL remplace le jeton à chaque usage (`fpl login` le signale), l'Action échoue et ouvre une alerte : il faudra alors une autre solution.
+La FPL donne un nouveau jeton à chaque usage, et une Action ne peut pas réécrire ses secrets. Le pilote garde donc le dernier jeton d'un passage à l'autre dans le cache de l'Action, chiffré avec le secret `FPL_REFRESH_TOKEN` (les forks n'y ont pas accès). Le secret ne sert qu'au premier passage ; après un nouveau `fpl login --print`, le pilote repart du nouveau secret. Il faut refaire `fpl login --print` et remplacer le secret au bout de six mois (la FPL le demande), ou si l'Action reste arrêtée plus d'une semaine (GitHub vide alors son cache). La vérification du matin ouvre une alerte dans ces cas-là.
 
 Règlement : l'article 28 (d) des [conditions FPL](https://fantasy.premierleague.com/en/help/terms) interdit d'accéder au jeu par des systèmes automatisés, et l'article 36 prévoit suspension ou disqualification en cas de manquement.
 

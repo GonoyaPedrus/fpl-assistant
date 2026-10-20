@@ -57,7 +57,8 @@ def _token(data: dict[str, str], attempts: int = 3) -> dict:
         resp = requests.post(
             f"{AUTHORITY}/token", data={"client_id": CLIENT_ID, **data}, timeout=30
         )
-        # Une erreur serveur n'a rien changé côté FPL : on peut réessayer sans risque.
+        # Après une erreur serveur, on réessaie. Si la FPL avait quand même donné un nouveau
+        # jeton, il est perdu de toute façon : l'essai suivant échoue et l'alerte part.
         if resp.status_code not in (429, 500, 502, 503, 504) or attempt == attempts - 1:
             break
         time.sleep(5 * 2**attempt)
@@ -116,7 +117,7 @@ def load_refresh_token(path: Path = TOKEN_FILE) -> str:
 
 def access_token(path: Path = TOKEN_FILE) -> str:
     """Jeton d'accès frais. Si le serveur fait tourner le refresh token, le nouveau est
-    réécrit dans `path` (la GitHub Action le recopie ensuite dans ses secrets)."""
+    réécrit dans `path` (la GitHub Action le garde ensuite, chiffré, dans son cache)."""
     old = load_refresh_token(path)
     tokens = refresh(old)
     if tokens.get("refresh_token", old) != old:

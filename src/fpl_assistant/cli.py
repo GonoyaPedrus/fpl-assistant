@@ -44,7 +44,7 @@ def _report(label: str, test: pd.DataFrame, pred: pd.Series) -> None:
 
 def _login(print_token: bool) -> None:
     """Instructions sur stderr : avec `print_token`, seule la sortie standard porte le jeton,
-    pour `gh secret set FPL_REFRESH_TOKEN --body "$(fpl login --print)"`."""
+    à coller dans le secret GitHub FPL_REFRESH_TOKEN."""
 
     def say(text: str = "") -> None:
         print(text, file=sys.stderr)
@@ -57,7 +57,8 @@ def _login(print_token: bool) -> None:
     say("   reprends-la dans l'historique du navigateur.\n")
     say("Adresse : ")
     tokens = auth.finish_login(login, input())
-    # Un premier rafraîchissement dit si le serveur change le jeton à chaque usage.
+    # Un premier rafraîchissement vérifie que le jeton marche. La FPL en donne alors un
+    # nouveau : c'est lui qu'on garde.
     renewed = auth.refresh(tokens["refresh_token"])
     token = renewed.get("refresh_token", tokens["refresh_token"])
     entry = api.FPLClient(access_token=renewed["access_token"]).me()["player"]["entry"]
@@ -68,11 +69,6 @@ def _login(print_token: bool) -> None:
     else:
         auth.save_refresh_token(token)
         say(f"Jeton enregistré dans {auth.TOKEN_FILE}.")
-    if token != tokens["refresh_token"]:
-        say(
-            "Attention : la FPL change le jeton à chaque usage. Ça marche sur cette machine, "
-            "mais la GitHub Action ne peut pas garder le nouveau : signale-le avant de t'y fier."
-        )
 
 
 def main(argv: list[str] | None = None) -> None:
