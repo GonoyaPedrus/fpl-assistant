@@ -1,0 +1,47 @@
+name: Jeton FPL
+description: >
+  La FPL donne un nouveau jeton de connexion à chaque usage et un workflow ne peut pas
+  réécrire ses secrets. Le dernier jeton passe donc d'un passage au suivant par le cache
+  GitHub Actions, chiffré avec le secret FPL_REFRESH_TOKEN, que les forks n'ont pas.
+  `restore` avant `fpl`, `save` après, même en cas d'échec.
+inputs:
+  mode:
+    description: restore ou save
+    required: true
+  secret:
+    description: Le secret FPL_REFRESH_TOKEN
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      env:
+        FPL_REFRESH_TOKEN: ${{ inputs.secret }}
+      run: $GITHUB_ACTION_PATH/token.sh key
+
+    # Le cache le plus récent de ce secret : celui du dernier passage.
+    - if: inputs.mode == 'restore'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/fpl-token.enc
+        key: ${{ steps.key.outputs.key }}-${{ github.run_id }}
+        restore-keys: ${{ steps.key.outputs.key }}-
+    - if: inputs.mode == 'restore'
+      shell: bash
+      env:
+        FPL_REFRESH_TOKEN: ${{ inputs.secret }}
+      run: $GITHUB_ACTION_PATH/token.sh open
+
+    - id: seal
+      if: inputs.mode == 'save'
+      shell: bash
+      env:
+        FPL_REFRESH_TOKEN: ${{ inputs.secret }}
+      run: $GITHUB_ACTION_PATH/token.sh seal
+    # Une clé par passage : une entrée de cache ne se remplace pas.
+    - if: steps.seal.outputs.sealed == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/fpl-token.enc
+        key: ${{ steps.key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}

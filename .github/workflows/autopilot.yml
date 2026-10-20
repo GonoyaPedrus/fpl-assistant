@@ -4,8 +4,8 @@ name: Pilote automatique
 # précèdent, règle l'équipe (transferts, XI, capitaine, vice) une fois par journée et le
 # signale dans une issue. Chaque matin, vérifie aussi que la connexion au compte tient.
 # Il faut la variable FPL_ENTRY et le secret FPL_REFRESH_TOKEN (`fpl login --print`, cf.
-# README) ; sans FPL_ENTRY, rien ne tourne. Le secret n'est jamais réécrit ici : si la FPL
-# remplace le jeton à chaque usage, le passage échoue et ouvre une alerte.
+# README) ; sans FPL_ENTRY, rien ne tourne. La FPL change le jeton à chaque usage : le
+# dernier est gardé, chiffré, dans le cache (.github/actions/fpl-token).
 on:
   schedule:
     - cron: "7,37 * * * *"
@@ -46,13 +46,18 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -e .
+      - uses: ./.github/actions/fpl-token
+        with:
+          mode: restore
+          secret: ${{ secrets.FPL_REFRESH_TOKEN }}
       - name: Connexion au compte
-        env:
-          FPL_REFRESH_TOKEN: ${{ secrets.FPL_REFRESH_TOKEN }}
         run: fpl whoami
-      - name: Jeton inchangé
+      - name: Garder le nouveau jeton
         if: always()
-        run: .github/scripts/token-unchanged.sh
+        uses: ./.github/actions/fpl-token
+        with:
+          mode: save
+          secret: ${{ secrets.FPL_REFRESH_TOKEN }}
       - name: Alerte
         if: failure()
         env:
@@ -62,8 +67,9 @@ jobs:
           .github/scripts/alert.sh "Pilote automatique : connexion au compte FPL perdue" \
             "La vérification du matin a échoué : $RUN_URL
 
-          Relance \`gh secret set FPL_REFRESH_TOKEN --body \"\$(fpl login --print)\"\` avant la
-          prochaine deadline, sinon l'équipe ne sera pas réglée."
+          Avant la prochaine deadline, sinon l'équipe ne sera pas réglée : relance
+          \`fpl login --print\` et colle le jeton affiché dans le secret FPL_REFRESH_TOKEN
+          (Settings > Secrets and variables > Actions)."
 
   autopilot:
     if: vars.FPL_ENTRY != '' && github.event.schedule != '17 8 * * *'
@@ -128,11 +134,15 @@ jobs:
             fpl ingest --strict --out data/gw.parquet
           fi
 
+      - if: steps.window.outputs.run == 'true'
+        uses: ./.github/actions/fpl-token
+        with:
+          mode: restore
+          secret: ${{ secrets.FPL_REFRESH_TOKEN }}
       - name: Régler l'équipe
         id: apply
         if: steps.window.outputs.run == 'true'
         env:
-          FPL_REFRESH_TOKEN: ${{ secrets.FPL_REFRESH_TOKEN }}
           FPL_ENTRY: ${{ vars.FPL_ENTRY }}
           GW: ${{ steps.window.outputs.gw }}
         run: fpl autopilot --entry "$FPL_ENTRY" --gw "$GW" --apply --report report.md
@@ -148,9 +158,12 @@ jobs:
           url="$(gh issue create --title "$TITLE" --label autopilot --body-file report.md)"
           gh issue close "$url" # Un journal : la notification suffit.
 
-      - name: Jeton inchangé
+      - name: Garder le nouveau jeton
         if: always() && steps.window.outputs.run == 'true'
-        run: .github/scripts/token-unchanged.sh
+        uses: ./.github/actions/fpl-token
+        with:
+          mode: save
+          secret: ${{ secrets.FPL_REFRESH_TOKEN }}
 
       - name: Alerte en cas d'échec
         if: failure() && steps.window.outputs.run == 'true'
@@ -162,7 +175,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ "$APPLIED" = "success" ]; then
-            state="L'équipe a bien été réglée, mais la suite a échoué (jeton ou compte rendu)."
+            state="L'équipe a bien été réglée, mais la suite a échoué (compte rendu ou jeton)."
           else
             state="L'équipe n'a pas été réglée. Le pilote réessaie toutes les 30 minutes jusqu'à
           15 minutes avant la deadline."
@@ -171,5 +184,6 @@ jobs:
 
           Détails : $RUN_URL
 
-          Si l'erreur parle de connexion ou de jeton, relance
-          \`gh secret set FPL_REFRESH_TOKEN --body \"\$(fpl login --print)\"\`."
+          Si l'erreur parle de connexion ou de jeton, relance \`fpl login --print\` et colle
+          le jeton affiché dans le secret FPL_REFRESH_TOKEN (Settings > Secrets and variables >
+          Actions)."

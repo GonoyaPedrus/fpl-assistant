@@ -116,7 +116,7 @@ def load_refresh_token(path: Path = TOKEN_FILE) -> str:
 
 def access_token(path: Path = TOKEN_FILE) -> str:
     """Jeton d'accès frais. Si le serveur fait tourner le refresh token, le nouveau est
-    réécrit dans `path` (la GitHub Action le recopie ensuite dans ses secrets)."""
+    réécrit dans `path` (la GitHub Action le garde ensuite, chiffré, dans son cache)."""
     old = load_refresh_token(path)
     tokens = refresh(old)
     if tokens.get("refresh_token", old) != old:
