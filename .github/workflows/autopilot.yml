@@ -33,10 +33,14 @@ defaults:
 env:
   GH_REPO: ${{ github.repository }}
   FPL_TOKEN_FILE: ${{ github.workspace }}/../fpl-token.json
+  RELOGIN: >-
+    relance `fpl login --print` et colle le jeton affiché dans le secret FPL_REFRESH_TOKEN
+    (Settings > Secrets and variables > Actions).
 
 jobs:
+  # Depuis main seulement : le jeton gardé dans le cache d'une autre branche serait perdu.
   keepalive:
-    if: vars.FPL_ENTRY != '' && github.event.schedule == '17 8 * * *'
+    if: vars.FPL_ENTRY != '' && github.ref == 'refs/heads/main' && github.event.schedule == '17 8 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -67,12 +71,10 @@ jobs:
           .github/scripts/alert.sh "Pilote automatique : connexion au compte FPL perdue" \
             "La vérification du matin a échoué : $RUN_URL
 
-          Avant la prochaine deadline, sinon l'équipe ne sera pas réglée : relance
-          \`fpl login --print\` et colle le jeton affiché dans le secret FPL_REFRESH_TOKEN
-          (Settings > Secrets and variables > Actions)."
+          Avant la prochaine deadline, sinon l'équipe ne sera pas réglée, $RELOGIN"
 
   autopilot:
-    if: vars.FPL_ENTRY != '' && github.event.schedule != '17 8 * * *'
+    if: vars.FPL_ENTRY != '' && github.ref == 'refs/heads/main' && github.event.schedule != '17 8 * * *'
     runs-on: ubuntu-latest
     # Bien moins que les 3 heures de la fenêtre : un passage bloqué laisse sa chance au suivant.
     timeout-minutes: 30
@@ -146,10 +148,17 @@ jobs:
           FPL_ENTRY: ${{ vars.FPL_ENTRY }}
           GW: ${{ steps.window.outputs.gw }}
         run: fpl autopilot --entry "$FPL_ENTRY" --gw "$GW" --apply --report report.md
+      - name: Garder le nouveau jeton
+        if: always() && steps.window.outputs.run == 'true'
+        uses: ./.github/actions/fpl-token
+        with:
+          mode: save
+          secret: ${{ secrets.FPL_REFRESH_TOKEN }}
 
-      # Juste après l'envoi : ce compte rendu marque la journée comme faite.
+      # Juste après l'envoi, même si garder le jeton a échoué : ce compte rendu marque la
+      # journée comme faite, sans lui le passage suivant renverrait l'équipe.
       - name: Compte rendu
-        if: steps.apply.outcome == 'success'
+        if: always() && steps.apply.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           TITLE: ${{ steps.window.outputs.title }}
@@ -157,13 +166,6 @@ jobs:
           gh label create autopilot --color 1D76DB --description "Pilote automatique FPL" --force
           url="$(gh issue create --title "$TITLE" --label autopilot --body-file report.md)"
           gh issue close "$url" # Un journal : la notification suffit.
-
-      - name: Garder le nouveau jeton
-        if: always() && steps.window.outputs.run == 'true'
-        uses: ./.github/actions/fpl-token
-        with:
-          mode: save
-          secret: ${{ secrets.FPL_REFRESH_TOKEN }}
 
       - name: Alerte en cas d'échec
         if: failure() && steps.window.outputs.run == 'true'
@@ -184,6 +186,4 @@ jobs:
 
           Détails : $RUN_URL
 
-          Si l'erreur parle de connexion ou de jeton, relance \`fpl login --print\` et colle
-          le jeton affiché dans le secret FPL_REFRESH_TOKEN (Settings > Secrets and variables >
-          Actions)."
+          Si l'erreur parle de connexion ou de jeton, $RELOGIN"

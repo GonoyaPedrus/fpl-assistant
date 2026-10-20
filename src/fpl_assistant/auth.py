@@ -57,7 +57,8 @@ def _token(data: dict[str, str], attempts: int = 3) -> dict:
         resp = requests.post(
             f"{AUTHORITY}/token", data={"client_id": CLIENT_ID, **data}, timeout=30
         )
-        # Une erreur serveur n'a rien changé côté FPL : on peut réessayer sans risque.
+        # Après une erreur serveur, on réessaie. Si la FPL avait quand même donné un nouveau
+        # jeton, il est perdu de toute façon : l'essai suivant échoue et l'alerte part.
         if resp.status_code not in (429, 500, 502, 503, 504) or attempt == attempts - 1:
             break
         time.sleep(5 * 2**attempt)
