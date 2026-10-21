@@ -34,8 +34,9 @@ env:
   GH_REPO: ${{ github.repository }}
   FPL_TOKEN_FILE: ${{ github.workspace }}/../fpl-token.json
   RELOGIN: >-
-    relance `fpl login --print` et colle le jeton affiché dans le secret FPL_REFRESH_TOKEN
-    (Settings > Secrets and variables > Actions).
+    relance `fpl login --print` en suivant ses étapes (fenêtre de navigation privée fermée
+    aussitôt) et colle le jeton affiché dans le secret FPL_REFRESH_TOKEN (Settings > Secrets
+    and variables > Actions).
 
 jobs:
   # Depuis main seulement : le jeton gardé dans le cache d'une autre branche serait perdu.

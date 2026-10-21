@@ -50,11 +50,14 @@ def _login(print_token: bool) -> None:
         print(text, file=sys.stderr)
 
     login = auth.start_login()
-    say("1. Ouvre cette adresse et connecte-toi à ton compte FPL :\n")
+    say("1. Ferme tes fenêtres de navigation privée, ouvre-en une nouvelle et connecte-toi à ton")
+    say("   compte FPL avec cette adresse :\n")
     say(f"   {login.url}\n")
     say("2. Tu arrives sur fantasy.premierleague.com. Copie tout de suite l'adresse complète de")
     say("   la page : elle contient « code= » et ne vaut qu'une minute. Si elle a déjà changé,")
-    say("   reprends-la dans l'historique du navigateur.\n")
+    say("   relance `fpl login`.")
+    say("3. Ferme aussitôt la fenêtre privée. La FPL annule les jetons d'une session dès que le")
+    say("   site s'y reconnecte : regarde ton équipe ailleurs (navigateur habituel, appli).\n")
     say("Adresse : ")
     tokens = auth.finish_login(login, input())
     # Un premier rafraîchissement vérifie que le jeton marche. La FPL en donne alors un
