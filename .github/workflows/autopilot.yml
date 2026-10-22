@@ -18,6 +18,7 @@ on:
         default: false
 
 permissions:
+  actions: read # Voir si un autre passage attend déjà la deadline.
   contents: read
   issues: write # Compte rendu et alertes.
 
@@ -116,41 +117,38 @@ jobs:
             sleep "$left"
           fi
 
+  # Aussi si l'attente s'est interrompue (machine perdue) : mieux vaut régler tôt que jamais.
   autopilot:
     needs: [window, wait]
-    if: ${{ !cancelled() && needs.window.outputs.run == 'true' && needs.wait.result == 'success' }}
+    if: ${{ !cancelled() && needs.window.outputs.run == 'true' && needs.wait.result != 'skipped' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Moins que les 45 minutes entre le réveil et la dernière limite : l'alerte part à temps.
+    timeout-minutes: 40
     concurrency:
       group: fpl-token
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+      # Pendant l'attente, un autre passage a pu régler l'équipe, ou la deadline bouger.
       - name: Toujours à faire
         id: recheck
         env:
           GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
-          GW: ${{ needs.window.outputs.gw }}
-        run: |
-          # Pendant l'attente, un autre passage a pu régler l'équipe, ou la deadline bouger.
-          out="$RUNNER_TEMP/recheck"
-          GITHUB_OUTPUT="$out" .github/scripts/window.sh
-          if [ "$(sed -n 's/^run=//p' "$out")" = true ] && [ "$(sed -n 's/^gw=//p' "$out")" = "$GW" ]; then
-            { echo "go=true"; grep '^title=' "$out"; } >> "$GITHUB_OUTPUT"
-          fi
+          EXPECT_GW: ${{ needs.window.outputs.gw }}
+        run: .github/scripts/window.sh
 
       - uses: actions/setup-python@v5
-        if: steps.recheck.outputs.go == 'true'
+        if: steps.recheck.outputs.run == 'true'
         with:
           python-version: "3.12"
           cache: pip
-      - if: steps.recheck.outputs.go == 'true'
+      - if: steps.recheck.outputs.run == 'true'
         run: pip install -e ".[ml]"
 
       - name: Données à jour
-        if: steps.recheck.outputs.go == 'true'
-        timeout-minutes: 15
+        if: steps.recheck.outputs.run == 'true'
+        timeout-minutes: 10
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -161,29 +159,21 @@ jobs:
             fpl ingest --strict --out data/gw.parquet
           fi
 
-      - if: steps.recheck.outputs.go == 'true'
+      - if: steps.recheck.outputs.run == 'true'
         uses: ./.github/actions/fpl-token
         with:
           mode: restore
           secret: ${{ secrets.FPL_REFRESH_TOKEN }}
       - name: Régler l'équipe
         id: apply
-        if: steps.recheck.outputs.go == 'true'
-        timeout-minutes: 30
+        if: steps.recheck.outputs.run == 'true'
+        timeout-minutes: 20
         env:
           FPL_ENTRY: ${{ vars.FPL_ENTRY }}
           GW: ${{ needs.window.outputs.gw }}
-        run: |
-          # Près des deadlines, la FPL renvoie souvent des erreurs passagères : un essai de plus
-          # 5 minutes après. Un essai partiel ne fait pas dépasser le plafond de -4 au suivant.
-          for attempt in 1 2 3; do
-            fpl autopilot --entry "$FPL_ENTRY" --gw "$GW" --apply --report report.md && exit 0
-            [ "$attempt" -lt 3 ] || exit 1
-            echo "::warning::Essai $attempt échoué, nouvel essai dans 5 minutes."
-            sleep 300
-          done
+        run: fpl autopilot --entry "$FPL_ENTRY" --gw "$GW" --apply --report report.md
       - name: Garder le nouveau jeton
-        if: always() && steps.recheck.outputs.go == 'true'
+        if: always() && steps.recheck.outputs.run == 'true'
         uses: ./.github/actions/fpl-token
         with:
           mode: save
@@ -203,7 +193,7 @@ jobs:
 
       # Aussi quand le passage dépasse son temps (GitHub l'annule alors).
       - name: Alerte en cas d'échec
-        if: (failure() || cancelled()) && steps.recheck.outputs.go == 'true'
+        if: failure() || cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
           SEASON: ${{ needs.window.outputs.season }}
@@ -215,7 +205,7 @@ jobs:
             state="L'équipe a bien été réglée, mais la suite a échoué (compte rendu ou jeton)."
           else
             state="L'équipe n'a pas été réglée, ou seulement en partie (les détails disent
-          quoi) : ni ce passage ni ses essais n'ont abouti."
+          quoi)."
           fi
           .github/scripts/alert.sh "$SEASON J$GW : échec du pilote automatique" "$state
 
