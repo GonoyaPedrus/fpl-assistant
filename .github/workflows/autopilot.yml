@@ -1,8 +1,8 @@
 name: Pilote automatique
 
-# Toutes les 30 minutes, regarde la prochaine deadline FPL. Dans les 3 heures qui la
-# précèdent, règle l'équipe (transferts, XI, capitaine, vice) une fois par journée et le
-# signale dans une issue. Chaque matin, vérifie aussi que la connexion au compte tient.
+# Regarde la prochaine deadline FPL à chaque passage. Une heure avant, règle l'équipe
+# (transferts, XI, capitaine, vice) une fois par journée et le signale dans une issue.
+# Chaque matin, vérifie aussi que la connexion au compte tient.
 # Il faut la variable FPL_ENTRY et le secret FPL_REFRESH_TOKEN (`fpl login --print`, cf.
 # README) ; sans FPL_ENTRY, rien ne tourne. La FPL change le jeton à chaque usage : le
 # dernier est gardé, chiffré, dans le cache (.github/actions/fpl-token).
@@ -77,8 +77,8 @@ jobs:
   autopilot:
     if: vars.FPL_ENTRY != '' && github.ref == 'refs/heads/main' && github.event.schedule != '17 8 * * *'
     runs-on: ubuntu-latest
-    # Bien moins que les 3 heures de la fenêtre : un passage bloqué laisse sa chance au suivant.
-    timeout-minutes: 30
+    # Le plus long permis par GitHub : un passage peut attendre jusqu'à cinq heures.
+    timeout-minutes: 360
     steps:
       - name: Fenêtre avant la deadline
         id: window
@@ -103,10 +103,16 @@ jobs:
           done="$(gh issue list --label autopilot --state all --limit 200 --json title \
             | jq --arg t "$title" '[.[] | select(.title == $t)] | length')"
           echo "$season J$gw : deadline dans $left min, déjà réglée : $done"
+          # GitHub ne lance ce cron que toutes les 3 à 6 heures, pas toutes les 30 minutes. Le
+          # premier passage des 6 heures avant la deadline attend donc ici jusqu'à une heure
+          # avant ; pendant ce temps, la concurrence met les passages suivants en attente.
           if [ "$FORCE" = "true" ]; then
             title="$season J$gw : réglage manuel" # Laisse la place au passage avant la deadline.
-          elif [ "$done" != "0" ] || [ "$left" -gt 180 ] || [ "$left" -lt 15 ]; then
+          elif [ "$done" != "0" ] || [ "$left" -gt 360 ] || [ "$left" -lt 15 ]; then
             exit 0
+          elif [ "$left" -gt 60 ]; then
+            echo "Attente de $(( left - 60 )) min, jusqu'à une heure avant la deadline."
+            sleep $(( (left - 60) * 60 ))
           fi
           {
             echo "run=true"
@@ -127,6 +133,7 @@ jobs:
 
       - name: Données à jour
         if: steps.window.outputs.run == 'true'
+        timeout-minutes: 15
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -145,6 +152,7 @@ jobs:
       - name: Régler l'équipe
         id: apply
         if: steps.window.outputs.run == 'true'
+        timeout-minutes: 15
         env:
           FPL_ENTRY: ${{ vars.FPL_ENTRY }}
           GW: ${{ steps.window.outputs.gw }}
@@ -180,8 +188,8 @@ jobs:
           if [ "$APPLIED" = "success" ]; then
             state="L'équipe a bien été réglée, mais la suite a échoué (compte rendu ou jeton)."
           else
-            state="L'équipe n'a pas été réglée. Le pilote réessaie toutes les 30 minutes jusqu'à
-          15 minutes avant la deadline."
+            state="L'équipe n'a pas été réglée. Le pilote réessaie à son prochain passage s'il
+          a lieu plus de 15 minutes avant la deadline."
           fi
           .github/scripts/alert.sh "$SEASON J$GW : échec du pilote automatique" "$state
 
