@@ -18,7 +18,6 @@ on:
         default: false
 
 permissions:
-  actions: read # Voir si un autre passage attend déjà la deadline.
   contents: read
   issues: write # Compte rendu et alertes.
 
@@ -40,6 +39,10 @@ jobs:
     if: vars.FPL_ENTRY != '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      actions: read # Voir si un autre passage attend déjà la deadline.
+      contents: read
+      issues: read
     outputs:
       run: ${{ steps.window.outputs.run }}
       gw: ${{ steps.window.outputs.gw }}
@@ -120,10 +123,10 @@ jobs:
   # Aussi si l'attente s'est interrompue (machine perdue) : mieux vaut régler tôt que jamais.
   autopilot:
     needs: [window, wait]
-    if: ${{ !cancelled() && needs.window.outputs.run == 'true' && needs.wait.result != 'skipped' }}
+    if: ${{ !cancelled() && needs.window.outputs.run == 'true' }}
     runs-on: ubuntu-latest
-    # Moins que les 45 minutes entre le réveil et la dernière limite : l'alerte part à temps.
-    timeout-minutes: 40
+    # Les 45 minutes entre le réveil et la dernière limite : l'alerte part avant la deadline.
+    timeout-minutes: 45
     concurrency:
       group: fpl-token
       cancel-in-progress: false
@@ -148,7 +151,7 @@ jobs:
 
       - name: Données à jour
         if: steps.recheck.outputs.run == 'true'
-        timeout-minutes: 10
+        timeout-minutes: 20
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -167,7 +170,7 @@ jobs:
       - name: Régler l'équipe
         id: apply
         if: steps.recheck.outputs.run == 'true'
-        timeout-minutes: 20
+        timeout-minutes: 15
         env:
           FPL_ENTRY: ${{ vars.FPL_ENTRY }}
           GW: ${{ needs.window.outputs.gw }}

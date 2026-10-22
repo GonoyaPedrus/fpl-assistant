@@ -25,14 +25,18 @@ waiting() {
     [ "$WAITING" = true ]
     return
   fi
-  local id found=""
-  for id in $(gh run list --workflow autopilot.yml --status in_progress --json databaseId \
-    --jq '.[].databaseId'); do
+  local id ids
+  # En cas d'erreur, on attend quand même : deux passages qui attendent valent mieux qu'aucun.
+  ids="$(gh run list --workflow autopilot.yml --status in_progress --json databaseId \
+    --jq '.[].databaseId')" || { echo "::warning::Passages en cours illisibles."; return 1; }
+  for id in $ids; do
     [ "$id" = "${GITHUB_RUN_ID:-}" ] && continue
-    found+="$(gh run view "$id" --json jobs \
-      --jq '.jobs[] | select(.name == "wait" and .status == "in_progress") | .name')"
+    # Le job « wait » du workflow (son id, sans `name:`).
+    [ -n "$(gh run view "$id" --json jobs \
+      --jq '.jobs[] | select(.name == "wait" and .status == "in_progress") | .name')" ] &&
+      return 0
   done
-  [ -n "$found" ]
+  return 1
 }
 
 now="${NOW:-$(date +%s)}"
@@ -58,6 +62,11 @@ if [ "${FORCE:-false}" = "true" ]; then
 elif [ "$done" != "0" ]; then
   exit 0
 elif [ -n "${EXPECT_GW:-}" ]; then
+  # Passée la deadline, la journée attendue n'est plus la prochaine : réglée entre-temps ?
+  expected="$season J$EXPECT_GW : équipe réglée par le pilote automatique"
+  if [ "$(jq --arg t "$expected" '[.[] | select(.title == $t)] | length' "$titles")" != 0 ]; then
+    exit 0
+  fi
   if [ "$gw" != "$EXPECT_GW" ] || [ "$left" -lt "$FLOOR" ]; then
     echo "::error::Trop tard pour régler la J$EXPECT_GW."
     exit 1

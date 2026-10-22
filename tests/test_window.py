@@ -106,6 +106,9 @@ def test_after_the_wait_the_team_is_sent_now(tmp_path):
 
 def test_after_the_wait_a_team_set_meanwhile_is_left_alone(tmp_path):
     assert window(tmp_path, 58, titles=[TITLE], EXPECT_GW="8") == {}
+    # Même une fois la deadline passée, quand la J8 n'est plus la prochaine journée.
+    j7 = "2026-27 J7 : équipe réglée par le pilote automatique"
+    assert window(tmp_path, 7 * 24 * 60, titles=[j7], EXPECT_GW="7") == {}
 
 
 def test_after_the_wait_a_deadline_moved_far_away_is_left_to_a_later_run(tmp_path):
