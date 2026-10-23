@@ -2,14 +2,14 @@ name: Pilote automatique
 
 # Regarde la prochaine deadline FPL à chaque passage. Une heure avant, règle l'équipe
 # (transferts, XI, capitaine, vice) une fois par journée et le signale dans une issue.
-# Chaque matin, et avant d'attendre une deadline, vérifie aussi que la connexion tient.
+# À chaque passage planifié, et avant d'attendre une deadline, vérifie aussi que la
+# connexion tient.
 # Il faut la variable FPL_ENTRY et le secret FPL_REFRESH_TOKEN (`fpl login --print`, cf.
 # README) ; sans FPL_ENTRY, rien ne tourne. La FPL change le jeton à chaque usage : le
 # dernier est gardé, chiffré, dans le cache (.github/actions/fpl-token).
 on:
   schedule:
     - cron: "7,37 * * * *"
-    - cron: "17 8 * * *"
   workflow_dispatch:
     inputs:
       force:
@@ -58,13 +58,13 @@ jobs:
           FORCE: ${{ inputs.force }}
         run: .github/scripts/window.sh
 
-  # Chaque matin, et avant une longue attente pour qu'un jeton annulé se voie des heures
-  # avant la deadline.
+  # À chaque passage planifié (GitHub les espace de 3 à 6 heures), et avant une longue
+  # attente : un jeton annulé se voit vite, et l'heure de la coupure aide à en trouver la cause.
   check:
     needs: window
     if: >-
       ${{ !cancelled() && vars.FPL_ENTRY != '' && github.ref == 'refs/heads/main' &&
-      (github.event.schedule == '17 8 * * *' || needs.window.outputs.check == 'true') }}
+      (github.event_name == 'schedule' || needs.window.outputs.check == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Un usage du jeton à la fois : deux rafraîchissements simultanés se gêneraient.
@@ -101,7 +101,7 @@ jobs:
 
           Avant la prochaine deadline, sinon l'équipe ne sera pas réglée, $RELOGIN"
 
-  # Hors du verrou du jeton : l'attente ne bloque ni la vérification du matin, ni un
+  # Hors du verrou du jeton : l'attente ne bloque ni la vérification de connexion, ni un
   # réglage manuel.
   wait:
     needs: [window, check]
