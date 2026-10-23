@@ -41,18 +41,19 @@ runs:
       env:
         FPL_REFRESH_TOKEN: ${{ inputs.secret }}
       run: $GITHUB_ACTION_PATH/token.sh seal
-    # Une clé par passage : une entrée de cache ne se remplace pas.
+    # Une clé par passage et par job (un passage peut vérifier la connexion puis régler
+    # l'équipe) : une entrée de cache ne se remplace pas.
     - if: steps.seal.outputs.sealed == 'true'
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/fpl-token.enc
-        key: ${{ steps.key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: ${{ steps.key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
     # Un enregistrement raté n'est qu'un avertissement pour actions/cache : le jeton serait
     # perdu sans bruit. On vérifie qu'il est bien là, pour que l'alerte parte.
     - if: steps.seal.outputs.sealed == 'true'
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/fpl-token.enc
-        key: ${{ steps.key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: ${{ steps.key.outputs.key }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
         lookup-only: true
         fail-on-cache-miss: true
