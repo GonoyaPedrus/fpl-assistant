@@ -10,6 +10,7 @@ name: Pilote automatique
 on:
   schedule:
     - cron: "7,37 * * * *"
+    - cron: "17 8 * * *" # Un passage de plus : GitHub espace les autres de 3 à 6 heures.
   workflow_dispatch:
     inputs:
       force:
@@ -58,13 +59,14 @@ jobs:
           FORCE: ${{ inputs.force }}
         run: .github/scripts/window.sh
 
-  # À chaque passage planifié (GitHub les espace de 3 à 6 heures), et avant une longue
+  # À chaque passage planifié, sauf s'il règle l'équipe tout de suite, et avant une longue
   # attente : un jeton annulé se voit vite, et l'heure de la coupure aide à en trouver la cause.
   check:
     needs: window
     if: >-
       ${{ !cancelled() && vars.FPL_ENTRY != '' && github.ref == 'refs/heads/main' &&
-      (github.event_name == 'schedule' || needs.window.outputs.check == 'true') }}
+      ((github.event_name == 'schedule' && needs.window.outputs.run != 'true') ||
+      needs.window.outputs.check == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Un usage du jeton à la fois : deux rafraîchissements simultanés se gêneraient.
@@ -78,24 +80,38 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -e .
-      - uses: ./.github/actions/fpl-token
+      - id: restore
+        uses: ./.github/actions/fpl-token
         with:
           mode: restore
           secret: ${{ secrets.FPL_REFRESH_TOKEN }}
       - name: Connexion au compte
-        run: fpl whoami
+        id: whoami
+        run: fpl whoami 2>&1 | tee "$RUNNER_TEMP/whoami.log"
       - name: Garder le nouveau jeton
+        id: save
         if: always()
         uses: ./.github/actions/fpl-token
         with:
           mode: save
           secret: ${{ secrets.FPL_REFRESH_TOKEN }}
       - name: Alerte
-        if: failure()
+        if: >-
+          failure() && (steps.restore.outcome == 'failure' || steps.whoami.outcome == 'failure'
+          || steps.save.outcome == 'failure')
         env:
           GH_TOKEN: ${{ github.token }}
+          WHOAMI: ${{ steps.whoami.outcome }}
+          SAVE: ${{ steps.save.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # La FPL renvoie souvent des 503 après les matchs : seul un jeton refusé demande de
+          # se reconnecter, le reste ne laisse que le passage en échec.
+          if [ "$WHOAMI" = failure ] && [ "$SAVE" != failure ] &&
+            ! grep -q invalid_grant "$RUNNER_TEMP/whoami.log"; then
+            echo "::warning::Échec passager de la FPL, pas d'alerte."
+            exit 0
+          fi
           .github/scripts/alert.sh "Pilote automatique : connexion au compte FPL perdue" \
             "La vérification de la connexion a échoué : $RUN_URL
 
